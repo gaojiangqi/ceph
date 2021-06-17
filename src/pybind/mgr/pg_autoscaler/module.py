@@ -7,7 +7,7 @@ import mgr_util
 import threading
 import uuid
 from prettytable import PrettyTable
-from mgr_module import MgrModule
+from mgr_module import MgrModule, Option
 
 """
 Some terminology is made up for the purposes of this module:
@@ -56,7 +56,6 @@ def effective_target_ratio(target_ratio, total_target_ratio, total_target_bytes,
 
     return target_ratio
 
-
 class PgAdjustmentProgress(object):
     """
     Keeps the initial and target pg_num values
@@ -87,8 +86,20 @@ class PgAutoscaler(MgrModule):
         {
             "cmd": "osd pool autoscale-status",
             "desc": "report on pool pg_num sizing recommendation and intent",
-            "perm": "r"
+            "perm": "r",
         },
+        {
+            "cmd": "osd pool set autoscale-profile scale-up",
+            "desc": ("set the autoscaler behavior to start out with minimum pgs"
+                     "and scales up when there is pressure"),
+            "perm": "rw",
+        },
+        {
+            "cmd": "osd pool set autoscale-profile scale-down",
+            "desc": ("set the autoscaler behavior to start out with full pgs and"
+                     "scales down when there is pressure"),
+            "perm": "rw",
+        }
     ]
 
     NATIVE_OPTIONS = [
@@ -101,6 +112,17 @@ class PgAutoscaler(MgrModule):
             'name': 'sleep_interval',
             'default': str(60),
         },
+        Option(
+            'autoscale_profile',
+            default='scale-up',
+            type='str',
+            desc='pg_autoscale profiler',
+            long_desc=('Determines the behavior of the autoscaler algorithm '
+                       '`scale-up` means that it starts out with minmum pgs ',
+                       'and scales up when there is pressure, `scale-down` ',
+                       'means starts out with full pgs and scales down when ', 
+                       'there is pressure '),
+            runtime=True),
     ]
 
     def __init__(self, *args, **kwargs):
@@ -124,11 +146,28 @@ class PgAutoscaler(MgrModule):
                     self.get_module_option(opt['name']))
             self.log.debug(' mgr option %s = %s',
                            opt['name'], getattr(self, opt['name']))
-
+        # if the profiler option is not set, this means it is an old cluster
+        autoscale_profile = self.get_module_option("autoscale_profile")
+        if not autoscale_profile:
+            self.set_module_option("autoscale_profile", "scale-up")
 
     def handle_command(self, inbuf, cmd):
         if cmd['prefix'] == "osd pool autoscale-status":
             retval = self._command_autoscale_status(cmd)
+
+        elif cmd['prefix'] == "osd pool set autoscale-profile scale-up":
+            if self.autoscale_profile == "scale-up":
+                retval = 0, "", "autoscale-profile is already a scale-up!"
+            else:
+                self.set_module_option("autoscale_profile", "scale-up")
+                retval = 0, "", "autoscale-profile is now scale-up"
+
+        elif cmd['prefix'] == "osd pool set autoscale-profile scale-down":
+            if self.autoscale_profile == "scale-down":
+                retval = 0, "", "autoscale-profile is already a scale-down!"
+            else:
+                self.set_module_option("autoscale_profile", "scale-down")
+                retval = 0, "", "autoscale-profile is now scale-down"
         else:
             assert False  # ceph-mgr should never pass us unknown cmds
         return retval
@@ -136,7 +175,8 @@ class PgAutoscaler(MgrModule):
     def _command_autoscale_status(self, cmd):
         osdmap = self.get_osdmap()
         pools = osdmap.get_pools_by_name()
-        ps, root_map, pool_root = self._get_pool_status(osdmap, pools)
+        profile = self.autoscale_profile
+        ps, root_map, pool_root = self._get_pool_status(osdmap, pools, profile)
 
         if cmd.get('format') == 'json' or cmd.get('format') == 'json-pretty':
             return 0, json.dumps(ps, indent=4, sort_keys=True), ''
@@ -228,9 +268,12 @@ class PgAutoscaler(MgrModule):
                 self.osd_count = None  # Number of OSDs
                 self.pg_target = None  # Ideal full-capacity PG count?
                 self.pg_current = 0  # How many PGs already?
+                self.pg_left = 0
                 self.capacity = None  # Total capacity of OSDs in subtree
                 self.pool_ids = []
                 self.pool_names = []
+                self.pool_count = None
+                self.pool_used = 0
                 self.total_target_ratio = 0.0
                 self.total_target_bytes = 0 # including replication / EC overhead
 
@@ -269,7 +312,8 @@ class PgAutoscaler(MgrModule):
         for s in roots:
             s.osd_count = len(s.osds)
             s.pg_target = s.osd_count * self.mon_target_pg_per_osd
-
+            s.pg_left = s.pg_target
+            s.pool_count = len(s.pool_ids)
             capacity = 0.0
             for osd_stats in all_stats['osd_stats']:
                 if osd_stats['osd'] in s.osds:
@@ -289,24 +333,92 @@ class PgAutoscaler(MgrModule):
 
         return result, pool_root
 
-    def _get_pool_status(
+    def _calc_final_pg_target(
+            self,
+            p,
+            pool_name,
+            root_map,
+            root_id,
+            capacity_ratio,
+            even_pools,
+            bias,
+            is_used,
+            profile,
+    ):
+        """
+        `profile` determines behaviour of the autoscaler.
+        `is_used` flag used to determine if this is the first
+        pass where the caller tries to calculate/adjust pools that has 
+        used_ratio > even_ratio else this is the second pass, 
+        we calculate final_ratio by giving it 1 / pool_count 
+        of the root we are currently looking at.
+        """
+        if profile == "scale-up":
+            final_ratio = capacity_ratio
+            # So what proportion of pg allowance should we be using?
+            pool_pg_target = (final_ratio * root_map[root_id].pg_target) / p['size'] * bias
+            final_pg_target = max(p.get('options', {}).get('pg_num_min', PG_NUM_MIN),
+                    nearest_power_of_two(pool_pg_target))
+
+        else:
+            if is_used:
+                even_ratio = 1 / root_map[root_id].pool_count
+                used_ratio = capacity_ratio
+
+                if used_ratio > even_ratio:
+                    root_map[root_id].pool_used += 1
+                else:
+                    # keep track of even_pools to be used in second pass
+                    # of the caller function
+                    even_pools[pool_name] = p
+                    return None, None, None
+
+                final_ratio = max(used_ratio, even_ratio)
+                used_pg = final_ratio * root_map[root_id].pg_target
+                root_map[root_id].pg_left -= used_pg
+                pool_pg_target = used_pg / p['size'] * bias
+
+            else:
+                final_ratio = 1 / (root_map[root_id].pool_count - root_map[root_id].pool_used)
+                pool_pg_target = (final_ratio * root_map[root_id].pg_left) / p['size'] * bias
+
+            final_pg_target = max(p.get('options', {}).get('pg_num_min', PG_NUM_MIN),
+                    nearest_power_of_two(pool_pg_target))
+
+            self.log.info("Pool '{0}' root_id {1} using {2} of space, bias {3}, "
+                          "pg target {4} quantized to {5} (current {6})".format(
+                              p['pool_name'],
+                              root_id,
+                              capacity_ratio,
+                              bias,
+                              pool_pg_target,
+                              final_pg_target,
+                              p['pg_num_target']
+                          ))
+
+        return final_ratio, pool_pg_target, final_pg_target
+
+    def _calc_pool_targets(
             self,
             osdmap,
-            pools,
-            threshold=3.0,
+            pools, 
+            crush_map,
+            root_map, 
+            pool_root,
+            pool_stats,
+            ret,
+            threshold,
+            is_used,
+            profile,
     ):
-        assert threshold >= 2.0
-
-        crush_map = osdmap.get_crush()
-
-        root_map, pool_root = self.get_subtree_resource_status(osdmap, crush_map)
-
-        df = self.get('df')
-        pool_stats = dict([(p['id'], p['stats']) for p in df['pools']])
-
-        ret = []
-
-        # iterate over all pools to determine how they should be sized
+        """
+        Calculates final_pg_target of each pools and determine if it needs
+        scaling, this depends on the profile of the autoscaler. For scale-down,
+        we start out with a full complement of pgs and only descrease it when other 
+        pools needs more pgs due to increased usage. For scale-up, we start out with
+        the minimal amount of pgs and only scale when there is increase in usage.
+        """
+        even_pools = {}
         for pool_name, p in pools.items():
             pool_id = p['pool']
             if pool_id not in pool_stats:
@@ -317,6 +429,7 @@ class PgAutoscaler(MgrModule):
             # may not be true.
             cr_name = crush_map.get_rule_by_id(p['crush_rule'])['rule_name']
             root_id = int(crush_map.get_rule_root(cr_name))
+
             pool_root[pool_name] = root_id
 
             capacity = root_map[root_id].capacity
@@ -345,29 +458,20 @@ class PgAutoscaler(MgrModule):
                 root_map[root_id].total_target_ratio,
                 root_map[root_id].total_target_bytes,
                 capacity))
+
             target_ratio = effective_target_ratio(p['options'].get('target_size_ratio', 0.0),
                                                   root_map[root_id].total_target_ratio,
                                                   root_map[root_id].total_target_bytes,
                                                   capacity)
 
-            final_ratio = max(capacity_ratio, target_ratio)
+            capacity_ratio = max(capacity_ratio, target_ratio)
+            final_ratio, pool_pg_target, final_pg_target = self._calc_final_pg_target(p, 
+                    pool_name, root_map, root_id, capacity_ratio, even_pools, bias, is_used,
+                    profile,
+            )
 
-            # So what proportion of pg allowance should we be using?
-            pool_pg_target = (final_ratio * root_map[root_id].pg_target) / p['size'] * bias
-
-            final_pg_target = max(p['options'].get('pg_num_min', PG_NUM_MIN),
-                                  nearest_power_of_two(pool_pg_target))
-
-            self.log.info("Pool '{0}' root_id {1} using {2} of space, bias {3}, "
-                          "pg target {4} quantized to {5} (current {6})".format(
-                              p['pool_name'],
-                              root_id,
-                              final_ratio,
-                              bias,
-                              pool_pg_target,
-                              final_pg_target,
-                              p['pg_num_target']
-                          ))
+            if final_ratio == None:
+                continue
 
             adjust = False
             if (final_pg_target > p['pg_num_target'] * threshold or \
@@ -398,6 +502,39 @@ class PgAutoscaler(MgrModule):
                 'bias': p.get('options', {}).get('pg_autoscale_bias', 1.0),
                 });
 
+        return ret, even_pools
+
+    def _get_pool_status(
+            self,
+            osdmap,
+            pools,
+            profile,
+            threshold=3.0,
+    ):
+        assert threshold >= 2.0
+
+        crush_map = osdmap.get_crush()
+        root_map, pool_root = self.get_subtree_resource_status(osdmap, crush_map)
+        df = self.get('df')
+        pool_stats = dict([(p['id'], p['stats']) for p in df['pools']])
+
+        ret = []
+
+        # Iterate over all pools to determine how they should be sized.
+        # First call of _calc_pool_targets() is to find/adjust pools that uses more capacaity than
+        # the even_ratio of other pools and we adjust those first.
+        # Second call make use of the even_pools we keep track of in the first call.
+        # All we need to do is iterate over those and give them 1/pool_count of the 
+        # total pgs.
+
+        ret, even_pools = self._calc_pool_targets(osdmap, pools, crush_map, root_map, pool_root,
+                    pool_stats, ret, threshold, True, profile)
+
+        if profile == "scale-down":
+            # We only have adjust even_pools when we use scale-down profile 
+            ret, _ = self._calc_pool_targets(osdmap, even_pools, crush_map, root_map, pool_root, 
+                    pool_stats, ret, threshold, False, profile)
+
         return (ret, root_map, pool_root)
 
     def _update_progress_events(self):
@@ -419,7 +556,8 @@ class PgAutoscaler(MgrModule):
         if osdmap.get_require_osd_release() < 'nautilus':
             return
         pools = osdmap.get_pools_by_name()
-        ps, root_map, pool_root = self._get_pool_status(osdmap, pools)
+        profile = self.autoscale_profile
+        ps, root_map, pool_root = self._get_pool_status(osdmap, pools, profile)
 
         # Anyone in 'warn', set the health message for them and then
         # drop them from consideration.

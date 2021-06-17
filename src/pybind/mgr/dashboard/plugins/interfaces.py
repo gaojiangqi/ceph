@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 from . import PLUGIN_MANAGER as PM  # pylint: disable=cyclic-import
 from . import Interface, Mixin
@@ -69,3 +68,13 @@ class FilterRequest(object):
         @PM.add_abcspec
         def filter_request_before_handler(self, request):
             pass
+
+
+@PM.add_interface
+class ConfigNotify(Interface):
+    @PM.add_abcspec
+    def config_notify(self):
+        """
+        This method is called whenever a option of this mgr module has
+        been modified.
+        """

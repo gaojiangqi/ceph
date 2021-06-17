@@ -940,6 +940,7 @@ class MDCache {
 		     Formatter *f, Context *fin);
   void repair_inode_stats(CInode *diri);
   void repair_dirfrag_stats(CDir *dir);
+  void rdlock_dirfrags_stats(CInode *diri, MDSInternalContext *fin);
 
   // my leader
   MDSRank *mds;
@@ -1125,6 +1126,7 @@ class MDCache {
   void enqueue_scrub_work(MDRequestRef& mdr);
   void repair_inode_stats_work(MDRequestRef& mdr);
   void repair_dirfrag_stats_work(MDRequestRef& mdr);
+  void rdlock_dirfrags_stats_work(MDRequestRef& mdr);
 
   ceph::unordered_map<inodeno_t,CInode*> inode_map;  // map of head inodes by ino
   map<vinodeno_t, CInode*> snap_inode_map;  // map of snap inodes by ino
@@ -1141,7 +1143,6 @@ class MDCache {
   std::unique_ptr<PerfCounters> logger;
 
   Filer filer;
-  bool exceeded_size_limit = false;
   std::array<xlist<ClientLease*>, client_lease_pools> client_leases{};
 
   /* subtree keys and each tree's non-recursive nested subtrees (the "bounds") */
@@ -1303,6 +1304,8 @@ class MDCache {
   void finish_uncommitted_fragment(dirfrag_t basedirfrag, int op);
   void rollback_uncommitted_fragment(dirfrag_t basedirfrag, frag_vec_t&& old_frags);
 
+  void upkeep_main(void);
+
   uint64_t cache_memory_limit;
   double cache_reservation;
   double cache_health_threshold;
@@ -1343,8 +1346,20 @@ class C_MDS_RetryRequest : public MDSInternalContext {
   MDCache *cache;
   MDRequestRef mdr;
  public:
-  C_MDS_RetryRequest(MDCache *c, MDRequestRef& r);
+  C_MDS_RetryRequest(MDCache *c, MDRequestRef& r) :
+    MDSInternalContext(c->mds), cache(c), mdr(r) {}
   void finish(int r) override;
+};
+
+class CF_MDS_RetryRequestFactory : public MDSContextFactory {
+public:
+  CF_MDS_RetryRequestFactory(MDCache *cache, MDRequestRef &mdr, bool dl) :
+    mdcache(cache), mdr(mdr), drop_locks(dl) {}
+  MDSContext *build() override;
+private:
+  MDCache *mdcache;
+  MDRequestRef mdr;
+  bool drop_locks;
 };
 
 #endif

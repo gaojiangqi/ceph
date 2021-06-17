@@ -231,6 +231,7 @@ public:
   }
   void clear_multimds_snaps_allowed() { clear_flag(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS); }
   bool allows_multimds_snaps() const { return test_flag(CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS); }
+  bool joinable() const { return !test_flag(CEPH_MDSMAP_NOT_JOINABLE); }
 
   epoch_t get_epoch() const { return epoch; }
   void inc_epoch() { epoch++; }
@@ -305,6 +306,15 @@ public:
   int get_num_failed_mds() const {
     return failed.size();
   }
+  unsigned get_num_standby_replay_mds() const {
+    unsigned num = 0;
+    for (auto& i : mds_info) {
+      if (i.second.state == MDSMap::STATE_STANDBY_REPLAY) {
+	++num;
+      }
+    }
+    return num;
+  }
   unsigned get_num_mds(int state) const;
   // data pools
   void add_data_pool(int64_t poolid) {
@@ -313,7 +323,7 @@ public:
   int remove_data_pool(int64_t poolid) {
     std::vector<int64_t>::iterator p = std::find(data_pools.begin(), data_pools.end(), poolid);
     if (p == data_pools.end())
-      return -ENOENT;
+      return -CEPHFS_ENOENT;
     data_pools.erase(p);
     return 0;
   }
@@ -331,6 +341,9 @@ public:
   }
   void get_failed_mds_set(std::set<mds_rank_t>& s) const {
     s = failed;
+  }
+  void get_damaged_mds_set(std::set<mds_rank_t>& s) const {
+    s = damaged;
   }
 
   // features
@@ -473,7 +486,10 @@ public:
   // recovery_set.
   bool is_degraded() const;
   bool is_any_failed() const {
-    return failed.size();
+    return !failed.empty();
+  }
+  bool is_any_damaged() const {
+    return !damaged.empty();
   }
   bool is_resolving() const {
     return
@@ -545,8 +561,10 @@ public:
 
   void print(std::ostream& out) const;
   void print_summary(ceph::Formatter *f, std::ostream *out) const;
+  void print_flags(std::ostream& out) const;
 
   void dump(ceph::Formatter *f) const;
+  void dump_flags_state(Formatter *f) const;
   static void generate_test_instances(std::list<MDSMap*>& ls);
 
   static bool state_transition_valid(DaemonState prev, DaemonState next);
@@ -605,7 +623,13 @@ protected:
   bool inline_data_enabled = false;
 
   uint64_t cached_up_features = 0;
-
+private:
+  inline static const std::map<int, std::string> flag_display = {
+    {CEPH_MDSMAP_NOT_JOINABLE, "joinable"}, //inverse for user display
+    {CEPH_MDSMAP_ALLOW_SNAPS, "allow_snaps"},
+    {CEPH_MDSMAP_ALLOW_MULTIMDS_SNAPS, "allow_multimds_snaps"},
+    {CEPH_MDSMAP_ALLOW_STANDBY_REPLAY, "allow_standby_replay"}
+  };
 };
 WRITE_CLASS_ENCODER_FEATURES(MDSMap::mds_info_t)
 WRITE_CLASS_ENCODER_FEATURES(MDSMap)

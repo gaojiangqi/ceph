@@ -872,7 +872,7 @@ void sparse_copyup(O* op, const E& extent_map, ceph::buffer::list data) {
 }
 
 void sparse_copyup(neorados::WriteOp* op,
-                   const std::map<uint64_t, uint64_t> &extent_map,
+                   const std::vector<std::pair<uint64_t, uint64_t>>& extent_map,
                    ceph::buffer::list data) {
   sparse_copyup<neorados::WriteOp>(op, extent_map, data);
 }
@@ -2974,7 +2974,7 @@ int namespace_list(librados::IoCtx *ioctx,
   return namespace_list_finish(&iter, entries);
 }
 
-void sparsify(librados::ObjectWriteOperation *op, size_t sparse_size,
+void sparsify(librados::ObjectWriteOperation *op, uint64_t sparse_size,
               bool remove_empty)
 {
   bufferlist bl;
@@ -2983,7 +2983,7 @@ void sparsify(librados::ObjectWriteOperation *op, size_t sparse_size,
   op->exec("rbd", "sparsify", bl);
 }
 
-int sparsify(librados::IoCtx *ioctx, const std::string &oid, size_t sparse_size,
+int sparsify(librados::IoCtx *ioctx, const std::string &oid, uint64_t sparse_size,
              bool remove_empty)
 {
   librados::ObjectWriteOperation op;

@@ -387,7 +387,7 @@ struct str_len meta_prefixes[] = { STR_LEN_ENTRY("HTTP_X_AMZ"),
                                    STR_LEN_ENTRY("HTTP_X_ACCOUNT"),
                                    {NULL, 0} };
 
-void req_info::init_meta_info(bool *found_bad_meta)
+void req_info::init_meta_info(const DoutPrefixProvider *dpp, bool *found_bad_meta)
 {
   x_meta_map.clear();
 
@@ -399,7 +399,7 @@ void req_info::init_meta_info(bool *found_bad_meta)
       int len = meta_prefixes[prefix_num].len;
       const char *p = header_name.c_str();
       if (strncmp(p, prefix, len) == 0) {
-        dout(10) << "meta>> " << p << dendl;
+        ldpp_dout(dpp, 10) << "meta>> " << p << dendl;
         const char *name = p+len; /* skip the prefix */
         int name_len = header_name.size() - len;
 
@@ -410,10 +410,12 @@ void req_info::init_meta_info(bool *found_bad_meta)
         snprintf(name_low, meta_prefixes[0].len - 5 + name_len + 1, "%s%s", meta_prefixes[0].str + 5 /* skip HTTP_ */, name); // normalize meta prefix
         int j;
         for (j = 0; name_low[j]; j++) {
-          if (name_low[j] != '_')
-            name_low[j] = tolower(name_low[j]);
-          else
+          if (name_low[j] == '_')
             name_low[j] = '-';
+          else if (name_low[j] == '-')
+            name_low[j] = '_';
+          else
+            name_low[j] = tolower(name_low[j]);
         }
         name_low[j] = 0;
 
@@ -431,7 +433,7 @@ void req_info::init_meta_info(bool *found_bad_meta)
     }
   }
   for (const auto& kv: x_meta_map) {
-    dout(10) << "x>> " << kv.first << ":" << rgw::crypt_sanitize::x_meta_map{kv.first, kv.second} << dendl;
+    ldpp_dout(dpp, 10) << "x>> " << kv.first << ":" << rgw::crypt_sanitize::x_meta_map{kv.first, kv.second} << dendl;
   }
 }
 
@@ -788,7 +790,7 @@ int NameVal::parse()
   return ret; 
 }
 
-int RGWHTTPArgs::parse()
+int RGWHTTPArgs::parse(const DoutPrefixProvider *dpp)
 {
   int pos = 0;
   bool end = false;
@@ -820,7 +822,7 @@ int RGWHTTPArgs::parse()
         });
       }
       string& val = nv.get_val();
-      dout(10) << "name: " << name << " val: " << val << dendl;
+      ldpp_dout(dpp, 10) << "name: " << name << " val: " << val << dendl;
       append(name, val);
     }
 
@@ -838,6 +840,7 @@ void RGWHTTPArgs::append(const string& name, const string& val)
     val_map[name] = val;
   }
 
+// when sub_resources exclusive by object are added, please remember to update obj_sub_resource in RGWHTTPArgs::exist_obj_excl_sub_resource().
   if ((name.compare("acl") == 0) ||
       (name.compare("cors") == 0) ||
       (name.compare("notification") == 0) ||
@@ -1012,14 +1015,16 @@ namespace {
 
 struct perm_state_from_req_state : public perm_state_base {
   req_state * const s;
-  perm_state_from_req_state(req_state * const _s) : perm_state_base(_s->cct,
-                                                                    _s->env,
-                                                                    _s->auth.identity.get(),
-                                                                    _s->bucket.get() ? _s->bucket->get_info() : RGWBucketInfo(),
-                                                                    _s->perm_mask,
-                                                                    _s->defer_to_bucket_acls,
-                                                                    _s->bucket_access_conf),
-                                                                    s(_s) {}
+  perm_state_from_req_state(req_state * const _s)
+    : perm_state_base(_s->cct,
+		      _s->env,
+		      _s->auth.identity.get(),
+		      _s->bucket.get() ? _s->bucket->get_info() : RGWBucketInfo(),
+		      _s->perm_mask,
+		      _s->defer_to_bucket_acls,
+		      _s->bucket_access_conf),
+      s(_s) {}
+
   std::optional<bool> get_request_payer() const override {
     const char *request_payer = s->info.env->get("HTTP_X_AMZ_REQUEST_PAYER");
     if (!request_payer) {
@@ -1046,30 +1051,31 @@ Effect eval_or_pass(const boost::optional<Policy>& policy,
 		    const rgw::IAM::Environment& env,
 		    boost::optional<const rgw::auth::Identity&> id,
 		    const uint64_t op,
-		    const ARN& arn) {
+		    const ARN& arn,
+				boost::optional<rgw::IAM::PolicyPrincipal&> princ_type=boost::none) {
   if (!policy)
     return Effect::Pass;
   else
-    return policy->eval(env, id, op, arn);
+    return policy->eval(env, id, op, arn, princ_type);
 }
 
 }
 
-Effect eval_user_policies(const vector<Policy>& user_policies,
+Effect eval_identity_or_session_policies(const vector<Policy>& policies,
                           const rgw::IAM::Environment& env,
                           boost::optional<const rgw::auth::Identity&> id,
                           const uint64_t op,
                           const ARN& arn) {
-  auto usr_policy_res = Effect::Pass, prev_res = Effect::Pass;
-  for (auto& user_policy : user_policies) {
-    if (usr_policy_res = eval_or_pass(user_policy, env, id, op, arn); usr_policy_res == Effect::Deny)
-      return usr_policy_res;
-    else if (usr_policy_res == Effect::Allow)
+  auto policy_res = Effect::Pass, prev_res = Effect::Pass;
+  for (auto& policy : policies) {
+    if (policy_res = eval_or_pass(policy, env, id, op, arn); policy_res == Effect::Deny)
+      return policy_res;
+    else if (policy_res == Effect::Allow)
       prev_res = Effect::Allow;
-    else if (usr_policy_res == Effect::Pass && prev_res == Effect::Allow)
-      usr_policy_res = Effect::Allow;
+    else if (policy_res == Effect::Pass && prev_res == Effect::Allow)
+      policy_res = Effect::Allow;
   }
-  return usr_policy_res;
+  return policy_res;
 }
 
 bool verify_user_permission(const DoutPrefixProvider* dpp,
@@ -1079,7 +1085,7 @@ bool verify_user_permission(const DoutPrefixProvider* dpp,
                             const rgw::ARN& res,
                             const uint64_t op)
 {
-  auto usr_policy_res = eval_user_policies(user_policies, s->env, boost::none, op, res);
+  auto usr_policy_res = eval_identity_or_session_policies(user_policies, s->env, boost::none, op, res);
   if (usr_policy_res == Effect::Deny) {
     return false;
   }
@@ -1158,25 +1164,48 @@ bool verify_bucket_permission(const DoutPrefixProvider* dpp,
                               RGWAccessControlPolicy * const user_acl,
                               RGWAccessControlPolicy * const bucket_acl,
 			      const boost::optional<Policy>& bucket_policy,
-                              const vector<Policy>& user_policies,
+                              const vector<Policy>& identity_policies,
+                              const vector<Policy>& session_policies,
                               const uint64_t op)
 {
   if (!verify_requester_payer_permission(s))
     return false;
 
-  auto usr_policy_res = eval_user_policies(user_policies, s->env, boost::none, op, ARN(bucket));
-  if (usr_policy_res == Effect::Deny)
+  auto identity_policy_res = eval_identity_or_session_policies(identity_policies, s->env, boost::none, op, ARN(bucket));
+  if (identity_policy_res == Effect::Deny)
     return false;
 
+  rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
   auto r = eval_or_pass(bucket_policy, s->env, *s->identity,
-			op, ARN(bucket));
-  if (r == Effect::Allow)
+			op, ARN(bucket), princ_type);
+  if (r == Effect::Deny)
+    return false;
+
+  //Take into account session policies, if the identity making a request is a role
+  if (!session_policies.empty()) {
+    auto session_policy_res = eval_identity_or_session_policies(session_policies, s->env, boost::none, op, ARN(bucket));
+    if (session_policy_res == Effect::Deny) {
+        return false;
+    }
+    if (princ_type == rgw::IAM::PolicyPrincipal::Role) {
+      //Intersection of session policy and identity policy plus intersection of session policy and bucket policy
+      if ((session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow) ||
+          (session_policy_res == Effect::Allow && r == Effect::Allow))
+        return true;
+    } else if (princ_type == rgw::IAM::PolicyPrincipal::Session) {
+      //Intersection of session policy and identity policy plus bucket policy
+      if ((session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow) || r == Effect::Allow)
+        return true;
+    } else if (princ_type == rgw::IAM::PolicyPrincipal::Other) {// there was no match in the bucket policy
+      if (session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow)
+        return true;
+    }
+    return false;
+  }
+
+  if (r == Effect::Allow || identity_policy_res == Effect::Allow)
     // It looks like S3 ACLs only GRANT permissions rather than
     // denying them, so this should be safe.
-    return true;
-  else if (r == Effect::Deny)
-    return false;
-  else if (usr_policy_res == Effect::Allow) // r is Effect::Pass at this point
     return true;
 
   const auto perm = op_to_perm(op);
@@ -1191,13 +1220,14 @@ bool verify_bucket_permission(const DoutPrefixProvider* dpp,
                               RGWAccessControlPolicy * const bucket_acl,
 			      const boost::optional<Policy>& bucket_policy,
                               const vector<Policy>& user_policies,
+                              const vector<Policy>& session_policies,
                               const uint64_t op)
 {
   perm_state_from_req_state ps(s);
   return verify_bucket_permission(dpp, &ps, bucket,
                                   user_acl, bucket_acl,
                                   bucket_policy, user_policies,
-                                  op);
+                                  session_policies, op);
 }
 
 bool verify_bucket_permission_no_policy(const DoutPrefixProvider* dpp, struct perm_state_base * const s,
@@ -1261,31 +1291,54 @@ bool verify_bucket_permission(const DoutPrefixProvider* dpp, struct req_state * 
                                   s->bucket_acl.get(),
                                   s->iam_policy,
                                   s->iam_user_policies,
+                                  s->session_policies,
                                   op);
 }
 
-// Authorize anyone permitted by the policy and the bucket owner
+// Authorize anyone permitted by the bucket policy, identity policies, session policies and the bucket owner
 // unless explicitly denied by the policy.
 
 int verify_bucket_owner_or_policy(struct req_state* const s,
 				  const uint64_t op)
 {
-  auto usr_policy_res = eval_user_policies(s->iam_user_policies, s->env, boost::none, op, ARN(s->bucket->get_key()));
-  if (usr_policy_res == Effect::Deny) {
+  auto identity_policy_res = eval_identity_or_session_policies(s->iam_user_policies, s->env, boost::none, op, ARN(s->bucket->get_key()));
+  if (identity_policy_res == Effect::Deny) {
     return -EACCES;
   }
 
+  rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
   auto e = eval_or_pass(s->iam_policy,
 			s->env, *s->auth.identity,
-			op, ARN(s->bucket->get_key()));
+			op, ARN(s->bucket->get_key()), princ_type);
   if (e == Effect::Deny) {
     return -EACCES;
   }
 
+  if (!s->session_policies.empty()) {
+    auto session_policy_res = eval_identity_or_session_policies(s->session_policies, s->env, boost::none, op, ARN(s->bucket->get_key()));
+    if (session_policy_res == Effect::Deny) {
+        return -EACCES;
+    }
+    if (princ_type == rgw::IAM::PolicyPrincipal::Role) {
+      //Intersection of session policy and identity policy plus intersection of session policy and bucket policy
+      if ((session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow) ||
+          (session_policy_res == Effect::Allow && e == Effect::Allow))
+        return 0;
+    } else if (princ_type == rgw::IAM::PolicyPrincipal::Session) {
+      //Intersection of session policy and identity policy plus bucket policy
+      if ((session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow) || e == Effect::Allow)
+        return 0;
+    } else if (princ_type == rgw::IAM::PolicyPrincipal::Other) {// there was no match in the bucket policy
+      if (session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow)
+        return 0;
+    }
+    return -EACCES;
+  }
+
   if (e == Effect::Allow ||
-      usr_policy_res == Effect::Allow ||
+      identity_policy_res == Effect::Allow ||
       (e == Effect::Pass &&
-       usr_policy_res == Effect::Pass &&
+       identity_policy_res == Effect::Pass &&
        s->auth.identity->is_owner_of(s->bucket_owner.get_id()))) {
     return 0;
   } else {
@@ -1300,12 +1353,13 @@ static inline bool check_deferred_bucket_perms(const DoutPrefixProvider* dpp,
 					       RGWAccessControlPolicy * const user_acl,
 					       RGWAccessControlPolicy * const bucket_acl,
 					       const boost::optional<Policy>& bucket_policy,
-                 const vector<Policy>& user_policies,
+                 const vector<Policy>& identity_policies,
+                 const vector<Policy>& session_policies,
 					       const uint8_t deferred_check,
 					       const uint64_t op)
 {
   return (s->defer_to_bucket_acls == deferred_check \
-	  && verify_bucket_permission(dpp, s, bucket, user_acl, bucket_acl, bucket_policy, user_policies,op));
+	  && verify_bucket_permission(dpp, s, bucket, user_acl, bucket_acl, bucket_policy, identity_policies, session_policies,op));
 }
 
 static inline bool check_deferred_bucket_only_acl(const DoutPrefixProvider* dpp,
@@ -1325,32 +1379,54 @@ bool verify_object_permission(const DoutPrefixProvider* dpp, struct perm_state_b
                               RGWAccessControlPolicy * const bucket_acl,
                               RGWAccessControlPolicy * const object_acl,
                               const boost::optional<Policy>& bucket_policy,
-                              const vector<Policy>& user_policies,
+                              const vector<Policy>& identity_policies,
+                              const vector<Policy>& session_policies,
                               const uint64_t op)
 {
   if (!verify_requester_payer_permission(s))
     return false;
 
-  auto usr_policy_res = eval_user_policies(user_policies, s->env, boost::none, op, ARN(obj));
-  if (usr_policy_res == Effect::Deny)
+  auto identity_policy_res = eval_identity_or_session_policies(identity_policies, s->env, boost::none, op, ARN(obj));
+  if (identity_policy_res == Effect::Deny)
     return false;
 
-  auto r = eval_or_pass(bucket_policy, s->env, *s->identity, op, ARN(obj));
-  if (r == Effect::Allow)
+  rgw::IAM::PolicyPrincipal princ_type = rgw::IAM::PolicyPrincipal::Other;
+  auto r = eval_or_pass(bucket_policy, s->env, *s->identity, op, ARN(obj), princ_type);
+  if (r == Effect::Deny)
+    return false;
+
+  if (!session_policies.empty()) {
+    auto session_policy_res = eval_identity_or_session_policies(session_policies, s->env, boost::none, op, ARN(obj));
+    if (session_policy_res == Effect::Deny) {
+        return false;
+    }
+    if (princ_type == rgw::IAM::PolicyPrincipal::Role) {
+      //Intersection of session policy and identity policy plus intersection of session policy and bucket policy
+      if ((session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow) ||
+          (session_policy_res == Effect::Allow && r == Effect::Allow))
+        return true;
+    } else if (princ_type == rgw::IAM::PolicyPrincipal::Session) {
+      //Intersection of session policy and identity policy plus bucket policy
+      if ((session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow) || r == Effect::Allow)
+        return true;
+    } else if (princ_type == rgw::IAM::PolicyPrincipal::Other) {// there was no match in the bucket policy
+      if (session_policy_res == Effect::Allow && identity_policy_res == Effect::Allow)
+        return true;
+    }
+    return false;
+  }
+
+  if (r == Effect::Allow || identity_policy_res == Effect::Allow)
     // It looks like S3 ACLs only GRANT permissions rather than
     // denying them, so this should be safe.
-    return true;
-  else if (r == Effect::Deny)
-    return false;
-  else if (usr_policy_res == Effect::Allow)
     return true;
 
   const auto perm = op_to_perm(op);
 
   if (check_deferred_bucket_perms(dpp, s, obj.bucket, user_acl, bucket_acl, bucket_policy,
-				  user_policies, RGW_DEFER_TO_BUCKET_ACLS_RECURSE, op) ||
+				  identity_policies, session_policies, RGW_DEFER_TO_BUCKET_ACLS_RECURSE, op) ||
       check_deferred_bucket_perms(dpp, s, obj.bucket, user_acl, bucket_acl, bucket_policy,
-				  user_policies, RGW_DEFER_TO_BUCKET_ACLS_FULL_CONTROL, rgw::IAM::s3All)) {
+				  identity_policies, session_policies, RGW_DEFER_TO_BUCKET_ACLS_FULL_CONTROL, rgw::IAM::s3All)) {
     return true;
   }
 
@@ -1399,14 +1475,15 @@ bool verify_object_permission(const DoutPrefixProvider* dpp, struct req_state * 
                               RGWAccessControlPolicy * const bucket_acl,
                               RGWAccessControlPolicy * const object_acl,
                               const boost::optional<Policy>& bucket_policy,
-                              const vector<Policy>& user_policies,
+                              const vector<Policy>& identity_policies,
+                              const vector<Policy>& session_policies,
                               const uint64_t op)
 {
   perm_state_from_req_state ps(s);
   return verify_object_permission(dpp, &ps, obj,
                                   user_acl, bucket_acl,
                                   object_acl, bucket_policy,
-                                  user_policies, op);
+                                  identity_policies, session_policies, op);
 }
 
 bool verify_object_permission_no_policy(const DoutPrefixProvider* dpp,
@@ -1487,8 +1564,44 @@ bool verify_object_permission(const DoutPrefixProvider* dpp, struct req_state *s
                                   s->object_acl.get(),
                                   s->iam_policy,
                                   s->iam_user_policies,
+                                  s->session_policies,
                                   op);
 }
+
+
+int verify_object_lock(const DoutPrefixProvider* dpp, const rgw::sal::Attrs& attrs, const bool bypass_perm, const bool bypass_governance_mode) {
+  auto aiter = attrs.find(RGW_ATTR_OBJECT_RETENTION);
+  if (aiter != attrs.end()) {
+    RGWObjectRetention obj_retention;
+    try {
+      decode(obj_retention, aiter->second);
+    } catch (buffer::error& err) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to decode RGWObjectRetention" << dendl;
+      return -EIO;
+    }
+    if (ceph::real_clock::to_time_t(obj_retention.get_retain_until_date()) > ceph_clock_now()) {
+      if (obj_retention.get_mode().compare("GOVERNANCE") != 0 || !bypass_perm || !bypass_governance_mode) {
+        return -EACCES;
+      }
+    }
+  }
+  aiter = attrs.find(RGW_ATTR_OBJECT_LEGAL_HOLD);
+  if (aiter != attrs.end()) {
+    RGWObjectLegalHold obj_legal_hold;
+    try {
+      decode(obj_legal_hold, aiter->second);
+    } catch (buffer::error& err) {
+      ldpp_dout(dpp, 0) << "ERROR: failed to decode RGWObjectLegalHold" << dendl;
+      return -EIO;
+    }
+    if (obj_legal_hold.is_enabled()) {
+      return -EACCES;
+    }
+  }
+  
+  return 0;
+}
+
 
 class HexTable
 {

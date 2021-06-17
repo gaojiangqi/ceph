@@ -183,7 +183,7 @@ struct MDSHealth
 WRITE_CLASS_ENCODER(MDSHealth)
 
 
-class MMDSBeacon : public PaxosServiceMessage {
+class MMDSBeacon final : public PaxosServiceMessage {
 private:
 
   static constexpr int HEAD_VERSION = 8;
@@ -218,7 +218,7 @@ protected:
     mds_features(feat) {
     set_priority(CEPH_MSG_PRIO_HIGH);
   }
-  ~MMDSBeacon() override {}
+  ~MMDSBeacon() final {}
 
 public:
   const uuid_d& get_fsid() const { return fsid; }
@@ -317,6 +317,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

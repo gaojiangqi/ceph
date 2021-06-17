@@ -368,18 +368,25 @@ class Elector : public ElectionOwner, RankProvider {
   void notify_rank_changed(int new_rank);
   /**
    * A peer has been removed so we should clean up state related to it.
+   * This is safe to call even if we haven't joined or are currently
+   * in a quorum.
    */
   void notify_rank_removed(int rank_removed);
   void notify_strategy_maybe_changed(int strategy);
   /**
-   * Set the disallowed leaders. This has no effect
-   * if the disallowed set is identical; if it differs
-   * we call an election.
+   * Set the disallowed leaders.
+   *
+   * If you call this and the new disallowed set
+   * contains your current leader, you are
+   * responsible for calling an election!
+   *
+   * @returns false if the set is unchanged,
+   *   true if the set changed
    */
-  void set_disallowed_leaders(const set<int>& dl) {
-    if (dl == disallowed_leaders) return;
+  bool set_disallowed_leaders(const set<int>& dl) {
+    if (dl == disallowed_leaders) return false;
     disallowed_leaders = dl;
-    call_election();
+    return true;
   }
   void dump_connection_scores(Formatter *f) {
     f->open_object_section("connection scores");

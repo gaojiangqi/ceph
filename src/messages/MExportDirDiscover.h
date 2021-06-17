@@ -18,7 +18,7 @@
 #include "include/types.h"
 #include "messages/MMDSOp.h"
 
-class MExportDirDiscover : public MMDSOp {
+class MExportDirDiscover final : public MMDSOp {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -43,7 +43,7 @@ protected:
     from(f), dirfrag(df), path(p), started(false) {
     set_tid(tid);
   }
-  ~MExportDirDiscover() override {}
+  ~MExportDirDiscover() final {}
 
 public:
   std::string_view get_type_name() const override { return "ExDis"; }
@@ -68,6 +68,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

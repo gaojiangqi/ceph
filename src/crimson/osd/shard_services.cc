@@ -4,6 +4,8 @@
 #include "crimson/osd/shard_services.h"
 
 #include "messages/MOSDAlive.h"
+#include "messages/MOSDPGCreated.h"
+#include "messages/MOSDPGTemp.h"
 
 #include "osd/osd_perf_counters.h"
 #include "osd/PeeringState.h"
@@ -14,11 +16,6 @@
 #include "crimson/net/Connection.h"
 #include "crimson/os/cyanstore/cyan_store.h"
 #include "crimson/osd/osdmap_service.h"
-#include "messages/MOSDPGTemp.h"
-#include "messages/MOSDPGCreated.h"
-#include "messages/MOSDPGNotify.h"
-#include "messages/MOSDPGInfo.h"
-#include "messages/MOSDPGQuery.h"
 
 namespace {
   seastar::logger& logger() {
@@ -88,8 +85,10 @@ void ShardServices::handle_conf_change(const ConfigProxy& conf,
   }
 }
 
-seastar::future<> ShardServices::send_to_osd(
-  int peer, Ref<Message> m, epoch_t from_epoch) {
+template<class MsgT>
+seastar::future<> ShardServices::do_send_to_osd(
+  int peer, MsgT m, epoch_t from_epoch)
+{
   if (osdmap->is_down(peer)) {
     logger().info("{}: osd.{} is_down", __func__, peer);
     return seastar::now();
@@ -100,8 +99,20 @@ seastar::future<> ShardServices::send_to_osd(
   } else {
     auto conn = cluster_msgr.connect(
         osdmap->get_cluster_addrs(peer).front(), CEPH_ENTITY_TYPE_OSD);
-    return conn->send(m);
+    return conn->send(std::move(m));
   }
+}
+
+seastar::future<> ShardServices::send_to_osd(
+  int peer, MessageRef m, epoch_t from_epoch) 
+{
+  return do_send_to_osd(peer, std::move(m), from_epoch);
+}
+
+seastar::future<> ShardServices::send_to_osd(
+  int peer, MessageURef m, epoch_t from_epoch) 
+{
+  return do_send_to_osd(peer, std::move(m), from_epoch);
 }
 
 seastar::future<> ShardServices::dispatch_context_transaction(
@@ -136,7 +147,7 @@ seastar::future<> ShardServices::dispatch_context(
   ceph_assert(col || ctx.transaction.empty());
   return seastar::when_all_succeed(
     dispatch_context_messages(
-      BufferedRecoveryMessages{ceph_release_t::octopus, ctx}),
+      BufferedRecoveryMessages{ctx}),
     col ? dispatch_context_transaction(col, ctx) : seastar::now()
   ).then_unpack([] {
     return seastar::now();
@@ -161,23 +172,12 @@ void ShardServices::remove_want_pg_temp(pg_t pgid)
   pg_temp_pending.erase(pgid);
 }
 
-void ShardServices::_sent_pg_temp()
-{
-#ifdef HAVE_STDLIB_MAP_SPLICING
-  pg_temp_pending.merge(pg_temp_wanted);
-#else
-  pg_temp_pending.insert(make_move_iterator(begin(pg_temp_wanted)),
-			 make_move_iterator(end(pg_temp_wanted)));
-#endif
-  pg_temp_wanted.clear();
-}
-
 void ShardServices::requeue_pg_temp()
 {
   unsigned old_wanted = pg_temp_wanted.size();
   unsigned old_pending = pg_temp_pending.size();
-  _sent_pg_temp();
-  pg_temp_wanted.swap(pg_temp_pending);
+  pg_temp_wanted.merge(pg_temp_pending);
+  pg_temp_pending.clear();
   logger().debug(
     "{}: {} + {} -> {}",
     __func__ ,
@@ -202,24 +202,24 @@ seastar::future<> ShardServices::send_pg_temp()
   if (pg_temp_wanted.empty())
     return seastar::now();
   logger().debug("{}: {}", __func__, pg_temp_wanted);
-  boost::intrusive_ptr<MOSDPGTemp> ms[2] = {nullptr, nullptr};
+  MURef<MOSDPGTemp> ms[2] = {nullptr, nullptr};
   for (auto& [pgid, pg_temp] : pg_temp_wanted) {
     auto& m = ms[pg_temp.forced];
     if (!m) {
-      m = make_message<MOSDPGTemp>(osdmap->get_epoch());
+      m = crimson::make_message<MOSDPGTemp>(osdmap->get_epoch());
       m->forced = pg_temp.forced;
     }
     m->pg_temp.emplace(pgid, pg_temp.acting);
   }
+  pg_temp_pending.merge(pg_temp_wanted);
+  pg_temp_wanted.clear();
   return seastar::parallel_for_each(std::begin(ms), std::end(ms),
-    [this](auto m) {
+    [this](auto& m) {
       if (m) {
-	return monc.send_message(m);
+	return monc.send_message(std::move(m));
       } else {
 	return seastar::now();
       }
-    }).then([this] {
-      _sent_pg_temp();
     });
 }
 
@@ -239,7 +239,7 @@ seastar::future<> ShardServices::send_pg_created(pg_t pgid)
   auto o = get_osdmap();
   ceph_assert(o->require_osd_release >= ceph_release_t::luminous);
   pg_created.insert(pgid);
-  return monc.send_message(make_message<MOSDPGCreated>(pgid));
+  return monc.send_message(crimson::make_message<MOSDPGCreated>(pgid));
 }
 
 seastar::future<> ShardServices::send_pg_created()
@@ -249,7 +249,7 @@ seastar::future<> ShardServices::send_pg_created()
   ceph_assert(o->require_osd_release >= ceph_release_t::luminous);
   return seastar::parallel_for_each(pg_created,
     [this](auto &pgid) {
-      return monc.send_message(make_message<MOSDPGCreated>(pgid));
+      return monc.send_message(crimson::make_message<MOSDPGCreated>(pgid));
     });
 }
 
@@ -312,7 +312,7 @@ seastar::future<> ShardServices::send_alive(const epoch_t want)
         up_thru_wanted > up_thru) {
     logger().debug("{} up_thru_wanted={} up_thru={}", __func__, want, up_thru);
     return monc.send_message(
-      make_message<MOSDAlive>(osdmap->get_epoch(), want));
+      crimson::make_message<MOSDAlive>(osdmap->get_epoch(), want));
   } else {
     logger().debug("{} {} <= {}", __func__, want, osdmap->get_up_thru(whoami));
     return seastar::now();

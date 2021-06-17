@@ -13,7 +13,7 @@ from gevent.event import Event
 from teuthology import misc as teuthology
 
 from tasks import ceph_manager
-from tasks.cephfs.filesystem import MDSCluster, Filesystem
+from tasks.cephfs.filesystem import MDSCluster, Filesystem, FSMissing
 from tasks.thrasher import Thrasher
 
 log = logging.getLogger(__name__)
@@ -122,6 +122,8 @@ class MDSThrasher(Thrasher, Greenlet):
     def _run(self):
         try:
             self.do_thrash()
+        except FSMissing:
+            pass
         except Exception as e:
             # Log exceptions here so we get the full backtrace (gevent loses them).
             # Also allow successful completion as gevent exception handling is a broken mess:
@@ -270,7 +272,7 @@ class MDSThrasher(Thrasher, Greenlet):
                 weight = 1.0
                 if 'thrash_weights' in self.config:
                     weight = self.config['thrash_weights'].get(label, '0.0')
-                skip = random.randrange(0.0, 1.0)
+                skip = random.random()
                 if weight <= skip:
                     self.log('skipping thrash iteration with skip ({skip}) > weight ({weight})'.format(skip=skip, weight=weight))
                     continue
@@ -416,7 +418,7 @@ def task(ctx, config):
         config['cluster'] = 'ceph'
 
     for fs in status.get_filesystems():
-        thrasher = MDSThrasher(ctx, manager, config, Filesystem(ctx, fs['id']), fs['mdsmap']['max_mds'])
+        thrasher = MDSThrasher(ctx, manager, config, Filesystem(ctx, fscid=fs['id']), fs['mdsmap']['max_mds'])
         thrasher.start()
         ctx.ceph[config['cluster']].thrashers.append(thrasher)
 

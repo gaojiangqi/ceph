@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=unused-argument
 # pylint: disable=too-many-statements,too-many-branches
-from __future__ import absolute_import
 
 import logging
 import math
@@ -236,6 +235,21 @@ class Rbd(RESTController):
     def default_features(self):
         rbd_default_features = mgr.get('config')['rbd_default_features']
         return format_bitmask(int(rbd_default_features))
+
+    @RESTController.Collection('GET')
+    def clone_format_version(self):
+        """Return the RBD clone format version.
+        """
+        rbd_default_clone_format = mgr.get('config')['rbd_default_clone_format']
+        if rbd_default_clone_format != 'auto':
+            return int(rbd_default_clone_format)
+        osd_map = mgr.get_osdmap().dump()
+        min_compat_client = osd_map.get('min_compat_client', '')
+        require_min_compat_client = osd_map.get('require_min_compat_client', '')
+        if max(min_compat_client, require_min_compat_client) < 'mimic':
+            return 1
+
+        return 2
 
     @RbdTask('trash/move', ['{image_spec}'], 2.0)
     @RESTController.Resource('POST')

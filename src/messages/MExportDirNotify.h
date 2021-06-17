@@ -17,7 +17,7 @@
 
 #include "messages/MMDSOp.h"
 
-class MExportDirNotify : public MMDSOp {
+class MExportDirNotify final : public MMDSOp {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -44,7 +44,7 @@ protected:
     base(i), ack(a), old_auth(oa), new_auth(na) {
     set_tid(tid);
   }
-  ~MExportDirNotify() override {}
+  ~MExportDirNotify() final {}
 
 public:
   std::string_view get_type_name() const override { return "ExNot"; }
@@ -85,6 +85,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

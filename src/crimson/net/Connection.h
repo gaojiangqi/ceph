@@ -126,6 +126,8 @@ class Connection : public seastar::enable_shared_from_this<Connection> {
 #endif
 
   /// send a message over a connection that has completed its handshake
+  virtual seastar::future<> send(MessageURef msg) = 0;
+  // The version with MessageRef will be dropped in the future
   virtual seastar::future<> send(MessageRef msg) = 0;
 
   /// send a keepalive message over a connection that has completed its
@@ -146,10 +148,6 @@ class Connection : public seastar::enable_shared_from_this<Connection> {
   }
   auto get_last_keepalive() const { return last_keepalive; }
   auto get_last_keepalive_ack() const { return last_keepalive_ack; }
-
-  seastar::shared_ptr<Connection> get_shared() {
-    return shared_from_this();
-  }
 
   struct user_private_t {
     virtual ~user_private_t() = default;

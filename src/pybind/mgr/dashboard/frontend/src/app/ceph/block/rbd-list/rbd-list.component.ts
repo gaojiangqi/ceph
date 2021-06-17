@@ -3,30 +3,29 @@ import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
 import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
 import _ from 'lodash';
 
-import { RbdService } from '../../../shared/api/rbd.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { TableStatusViewCache } from '../../../shared/classes/table-status-view-cache';
-import { ConfirmationModalComponent } from '../../../shared/components/confirmation-modal/confirmation-modal.component';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { ViewCacheStatus } from '../../../shared/enum/view-cache-status.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { ImageSpec } from '../../../shared/models/image-spec';
-import { Permission } from '../../../shared/models/permissions';
-import { Task } from '../../../shared/models/task';
-import { DimlessBinaryPipe } from '../../../shared/pipes/dimless-binary.pipe';
-import { DimlessPipe } from '../../../shared/pipes/dimless.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { TaskListService } from '../../../shared/services/task-list.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
-import { URLBuilderService } from '../../../shared/services/url-builder.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { TableStatusViewCache } from '~/app/shared/classes/table-status-view-cache';
+import { ConfirmationModalComponent } from '~/app/shared/components/confirmation-modal/confirmation-modal.component';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { ViewCacheStatus } from '~/app/shared/enum/view-cache-status.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { ImageSpec } from '~/app/shared/models/image-spec';
+import { Permission } from '~/app/shared/models/permissions';
+import { Task } from '~/app/shared/models/task';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { DimlessPipe } from '~/app/shared/pipes/dimless.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskListService } from '~/app/shared/services/task-list.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { URLBuilderService } from '~/app/shared/services/url-builder.service';
 import { RbdParentModel } from '../rbd-form/rbd-parent.model';
 import { RbdTrashMoveModalComponent } from '../rbd-trash-move-modal/rbd-trash-move-modal.component';
 import { RBDImageFormat, RbdModel } from './rbd-model';
@@ -55,6 +54,8 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   flattenTpl: TemplateRef<any>;
   @ViewChild('deleteTpl', { static: true })
   deleteTpl: TemplateRef<any>;
+  @ViewChild('removingStatTpl', { static: true })
+  removingStatTpl: TemplateRef<any>;
 
   permission: Permission;
   tableActions: CdTableAction[];
@@ -63,6 +64,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
   retries: number;
   tableStatus = new TableStatusViewCache();
   selection = new CdTableSelection();
+  icons = Icons;
 
   modalRef: NgbModalRef;
 
@@ -131,7 +133,9 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       permission: 'update',
       icon: Icons.edit,
       routerLink: () => this.urlBuilder.getEdit(getImageUri()),
-      name: this.actionLabels.EDIT
+      name: this.actionLabels.EDIT,
+      disable: (selection: CdTableSelection) =>
+        this.getRemovingStatusDesc(selection) || this.getInvalidNameDisable(selection)
     };
     const deleteAction: CdTableAction = {
       permission: 'delete',
@@ -144,7 +148,9 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       permission: 'create',
       canBePrimary: (selection: CdTableSelection) => selection.hasSingleSelection,
       disable: (selection: CdTableSelection) =>
-        !selection.hasSingleSelection || selection.first().cdExecuting,
+        this.getRemovingStatusDesc(selection) ||
+        this.getInvalidNameDisable(selection) ||
+        !!selection.first().cdExecuting,
       icon: Icons.copy,
       routerLink: () => `/block/rbd/copy/${getImageUri()}`,
       name: this.actionLabels.COPY
@@ -152,7 +158,10 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
     const flattenAction: CdTableAction = {
       permission: 'update',
       disable: (selection: CdTableSelection) =>
-        !selection.hasSingleSelection || selection.first().cdExecuting || !selection.first().parent,
+        this.getRemovingStatusDesc(selection) ||
+        this.getInvalidNameDisable(selection) ||
+        selection.first().cdExecuting ||
+        !selection.first().parent,
       icon: Icons.flatten,
       click: () => this.flattenRbdModal(),
       name: this.actionLabels.FLATTEN
@@ -163,8 +172,8 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       click: () => this.trashRbdModal(),
       name: this.actionLabels.TRASH,
       disable: (selection: CdTableSelection) =>
-        !selection.first() ||
-        !selection.hasSingleSelection ||
+        this.getRemovingStatusDesc(selection) ||
+        this.getInvalidNameDisable(selection) ||
         selection.first().image_format === RBDImageFormat.V1
     };
     this.tableActions = [
@@ -183,7 +192,7 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
         name: $localize`Name`,
         prop: 'name',
         flexGrow: 2,
-        cellTransformation: CellTemplate.executing
+        cellTemplate: this.removingStatTpl
       },
       {
         name: $localize`Pool`,
@@ -442,10 +451,24 @@ export class RbdListComponent extends ListWithDetails implements OnInit {
       return $localize`This RBD has cloned snapshots. Please delete related RBDs before deleting this RBD.`;
     }
 
-    return (
-      !selection.first() ||
-      !selection.hasSingleSelection ||
-      this.hasClonedSnapshots(selection.first())
-    );
+    return this.getInvalidNameDisable(selection) || this.hasClonedSnapshots(selection.first());
+  }
+
+  getInvalidNameDisable(selection: CdTableSelection): string | boolean {
+    const first = selection.first();
+
+    if (first?.name?.match(/[@/]/)) {
+      return $localize`This RBD image has an invalid name and can't be managed by ceph.`;
+    }
+
+    return !selection.first() || !selection.hasSingleSelection;
+  }
+
+  getRemovingStatusDesc(selection: CdTableSelection): string | boolean {
+    const first = selection.first();
+    if (first?.source === 'REMOVING') {
+      return $localize`Action not possible for an RBD in status 'Removing'`;
+    }
+    return false;
   }
 }

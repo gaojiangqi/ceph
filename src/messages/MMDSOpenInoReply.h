@@ -17,7 +17,7 @@
 
 #include "messages/MMDSOp.h"
 
-class MMDSOpenInoReply : public MMDSOp {
+class MMDSOpenInoReply final : public MMDSOp {
 public:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -59,6 +59,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

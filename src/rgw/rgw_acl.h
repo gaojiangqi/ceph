@@ -117,6 +117,7 @@ protected:
   ACLGranteeType type;
   rgw_user id;
   string email;
+  mutable rgw_user email_id;
   ACLPermission permission;
   string name;
   ACLGroupTypeEnum group;
@@ -139,6 +140,19 @@ public:
     default:
       _id = id;
       return true;
+    }
+  }
+
+  const rgw_user* get_id() const {
+    switch(type.get_type()) {
+    case ACL_TYPE_EMAIL_USER:
+      email_id.from_str(email);
+      return &email_id;
+    case ACL_TYPE_GROUP:
+    case ACL_TYPE_REFERER:
+      return nullptr;
+    default:
+      return &id;
     }
   }
 
@@ -322,7 +336,7 @@ public:
   uint32_t get_perm(const DoutPrefixProvider* dpp,
                     const rgw::auth::Identity& auth_identity,
                     uint32_t perm_mask);
-  uint32_t get_group_perm(ACLGroupTypeEnum group, uint32_t perm_mask) const;
+  uint32_t get_group_perm(const DoutPrefixProvider *dpp, ACLGroupTypeEnum group, uint32_t perm_mask) const;
   uint32_t get_referer_perm(uint32_t current_perm,
                             std::string http_referer,
                             uint32_t perm_mask);
@@ -387,6 +401,7 @@ protected:
   string display_name;
 public:
   ACLOwner() {}
+  ACLOwner(const rgw_user& _id) : id(_id) {}
   ~ACLOwner() {}
 
   void encode(bufferlist& bl) const {
@@ -487,7 +502,7 @@ public:
   }
 
   virtual bool compare_group_name(string& id, ACLGroupTypeEnum group) { return false; }
-  bool is_public() const;
+  bool is_public(const DoutPrefixProvider *dpp) const;
 
   friend bool operator==(const RGWAccessControlPolicy& lhs, const RGWAccessControlPolicy& rhs);
   friend bool operator!=(const RGWAccessControlPolicy& lhs, const RGWAccessControlPolicy& rhs);

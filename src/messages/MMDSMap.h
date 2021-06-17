@@ -20,7 +20,7 @@
 #include "mds/MDSMap.h"
 #include "include/ceph_features.h"
 
-class MMDSMap : public SafeMessage {
+class MMDSMap final : public SafeMessage {
 private:
   static constexpr int HEAD_VERSION = 2;
   static constexpr int COMPAT_VERSION = 1;
@@ -45,7 +45,7 @@ protected:
     mm.encode(encoded, -1);  // we will reencode with fewer features as necessary
   }
 
-  ~MMDSMap() override {}
+  ~MMDSMap() final {}
 
 public:
   std::string_view get_type_name() const override { return "mdsmap"; }
@@ -84,6 +84,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

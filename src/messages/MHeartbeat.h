@@ -20,7 +20,7 @@
 #include "common/DecayCounter.h"
 #include "messages/MMDSOp.h"
 
-class MHeartbeat : public MMDSOp {
+class MHeartbeat final : public MMDSOp {
 private:
   mds_load_t load;
   __s32 beat = 0;
@@ -40,7 +40,7 @@ protected:
       load(load),
       beat(beat)
   {}
-  ~MHeartbeat() override {}
+  ~MHeartbeat() final {}
 
 public:
   std::string_view get_type_name() const override { return "HB"; }
@@ -61,6 +61,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

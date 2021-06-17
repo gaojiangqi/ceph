@@ -5,11 +5,17 @@
 
 #include <iostream>
 
+#include <boost/intrusive/list.hpp>
+
+#include "crimson/os/seastore/ordering_handle.h"
 #include "crimson/os/seastore/seastore_types.h"
 #include "crimson/os/seastore/cached_extent.h"
 #include "crimson/os/seastore/root_block.h"
 
 namespace crimson::os::seastore {
+
+struct retired_extent_gate_t;
+class SeaStore;
 
 /**
  * Transaction
@@ -17,21 +23,10 @@ namespace crimson::os::seastore {
  * Representation of in-progress mutation. Used exclusively through Cache methods.
  */
 class Transaction {
-  friend class Cache;
-
-  RootBlockRef root;        ///< ref to root if read or written by transaction
-
-  segment_off_t offset = 0; ///< relative offset of next block
-
-  pextent_set_t read_set;   ///< set of extents read by paddr
-  ExtentIndex write_set;    ///< set of extents written by paddr
-
-  std::list<CachedExtentRef> fresh_block_list;   ///< list of fresh blocks
-  std::list<CachedExtentRef> mutated_block_list; ///< list of mutated blocks
-
-  pextent_set_t retired_set; ///< list of extents mutated by this transaction
-
 public:
+  OrderingHandle handle;
+
+  using Ref = std::unique_ptr<Transaction>;
   enum class get_extent_ret {
     PRESENT,
     ABSENT,
@@ -57,6 +52,7 @@ public:
   }
 
   void add_to_retired_set(CachedExtentRef ref) {
+    ceph_assert(!is_weak());
     if (!ref->is_initial_pending()) {
       // && retired_set.count(ref->get_paddr()) == 0
       // If it's already in the set, insert here will be a noop,
@@ -70,12 +66,19 @@ public:
     }
   }
 
+  void add_to_retired_uncached(paddr_t addr, extent_len_t length) {
+    retired_uncached.emplace_back(std::make_pair(addr, length));
+  }
+
   void add_to_read_set(CachedExtentRef ref) {
+    if (is_weak()) return;
+
     ceph_assert(read_set.count(ref) == 0);
     read_set.insert(ref);
   }
 
   void add_fresh_extent(CachedExtentRef ref) {
+    ceph_assert(!is_weak());
     fresh_block_list.push_back(ref);
     ref->set_paddr(make_record_relative_paddr(offset));
     offset += ref->get_length();
@@ -83,8 +86,18 @@ public:
   }
 
   void add_mutated_extent(CachedExtentRef ref) {
+    ceph_assert(!is_weak());
     mutated_block_list.push_back(ref);
     write_set.insert(*ref);
+  }
+
+  void mark_segment_to_release(segment_id_t segment) {
+    assert(to_release == NULL_SEG_ID);
+    to_release = segment;
+  }
+
+  segment_id_t get_segment_to_release() const {
+    return to_release;
   }
 
   const auto &get_fresh_block_list() {
@@ -98,11 +111,69 @@ public:
   const auto &get_retired_set() {
     return retired_set;
   }
-};
-using TransactionRef = std::unique_ptr<Transaction>;
 
-inline TransactionRef make_transaction() {
-  return std::make_unique<Transaction>();
+  bool is_weak() const {
+    return weak;
+  }
+
+private:
+  friend class Cache;
+  friend Ref make_test_transaction();
+
+  /**
+   * If set, *this may not be used to perform writes and will not provide
+   * consistentency allowing operations using to avoid maintaining a read_set.
+   */
+  const bool weak;
+
+  RootBlockRef root;        ///< ref to root if read or written by transaction
+
+  segment_off_t offset = 0; ///< relative offset of next block
+
+  pextent_set_t read_set;   ///< set of extents read by paddr
+  ExtentIndex write_set;    ///< set of extents written by paddr
+
+  std::list<CachedExtentRef> fresh_block_list;   ///< list of fresh blocks
+  std::list<CachedExtentRef> mutated_block_list; ///< list of mutated blocks
+
+  pextent_set_t retired_set; ///< list of extents mutated by this transaction
+
+  ///< if != NULL_SEG_ID, release this segment after completion
+  segment_id_t to_release = NULL_SEG_ID;
+
+  std::vector<std::pair<paddr_t, extent_len_t>> retired_uncached;
+
+  journal_seq_t initiated_after;
+
+  retired_extent_gate_t::token_t retired_gate_token;
+
+public:
+  Transaction(
+    OrderingHandle &&handle,
+    bool weak,
+    journal_seq_t initiated_after
+  ) : handle(std::move(handle)), weak(weak),
+      retired_gate_token(initiated_after) {}
+
+  ~Transaction() {
+    for (auto i = write_set.begin();
+	 i != write_set.end();) {
+      i->state = CachedExtent::extent_state_t::INVALID;
+      write_set.erase(*i++);
+    }
+  }
+
+  friend class crimson::os::seastore::SeaStore;
+};
+using TransactionRef = Transaction::Ref;
+
+/// Should only be used with dummy staged-fltree node extent manager
+inline TransactionRef make_test_transaction() {
+  return std::make_unique<Transaction>(
+    get_dummy_ordering_handle(),
+    false,
+    journal_seq_t{}
+  );
 }
 
 }

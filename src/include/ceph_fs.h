@@ -47,9 +47,15 @@
 #define CEPH_MONC_PROTOCOL   15 /* server/client */
 
 
-#define CEPH_INO_ROOT   1
-#define CEPH_INO_CEPH   2       /* hidden .ceph dir */
-#define CEPH_INO_LOST_AND_FOUND 4	/* reserved ino for use in recovery */
+#define CEPH_INO_ROOT             1
+/*
+ * hidden .ceph dir, which is no longer created but
+ * recognised in existing filesystems so that we
+ * don't try to fragment it.
+ */
+#define CEPH_INO_CEPH             2
+#define CEPH_INO_GLOBAL_SNAPREALM 3
+#define CEPH_INO_LOST_AND_FOUND   4 /* reserved ino for use in recovery */
 
 /* arbitrary limit on max # of monitors (cluster of 3 is typical) */
 #define CEPH_MAX_MON   31
@@ -415,6 +421,7 @@ enum {
 	CEPH_MDS_OP_ENQUEUE_SCRUB  = 0x01503,
 	CEPH_MDS_OP_REPAIR_FRAGSTATS = 0x01504,
 	CEPH_MDS_OP_REPAIR_INODESTATS = 0x01505,
+	CEPH_MDS_OP_RDLOCK_FRAGSSTATS = 0x01507
 };
 
 extern const char *ceph_mds_op_name(int op);

@@ -9,7 +9,7 @@
 #include "msg/Message.h"
 #include "include/cephfs/metrics/Types.h"
 
-class MClientMetrics : public SafeMessage {
+class MClientMetrics final : public SafeMessage {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -21,7 +21,7 @@ protected:
   MClientMetrics(std::vector<ClientMetricMessage> updates)
     : SafeMessage(CEPH_MSG_CLIENT_METRICS, HEAD_VERSION, COMPAT_VERSION), updates(updates) {
   }
-  ~MClientMetrics() { }
+  ~MClientMetrics() final {}
 
 public:
   std::string_view get_type_name() const override {
@@ -29,7 +29,10 @@ public:
   }
 
   void print(ostream &out) const override {
-    out << "client_metrics";
+    out << "client_metrics ";
+    for (auto &i : updates) {
+      i.print(&out);
+    }
   }
 
   void encode_payload(uint64_t features) override {
@@ -46,6 +49,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif // CEPH_MDS_CLIENT_METRICS_H

@@ -3,8 +3,8 @@ import { Component, NgZone, OnDestroy, OnInit } from '@angular/core';
 
 import { NgbDateStruct } from '@ng-bootstrap/ng-bootstrap';
 
-import { LogsService } from '../../../shared/api/logs.service';
-import { Icons } from '../../../shared/enum/icons.enum';
+import { LogsService } from '~/app/shared/api/logs.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
 
 @Component({
   selector: 'cd-logs',
@@ -16,6 +16,8 @@ export class LogsComponent implements OnInit, OnDestroy {
   clog: Array<any>;
   audit_log: Array<any>;
   icons = Icons;
+  clogText: string;
+  auditLogText: string;
 
   interval: number;
   priorities: Array<{ name: string; value: string }> = [
@@ -60,6 +62,8 @@ export class LogsComponent implements OnInit, OnDestroy {
   getInfo() {
     this.logsService.getLogs().subscribe((data: any) => {
       this.contentData = data;
+      this.clogText = this.logToText(this.contentData.clog);
+      this.auditLogText = this.logToText(this.contentData.audit_log);
       this.filterLogs();
     });
   }
@@ -135,5 +139,20 @@ export class LogsComponent implements OnInit, OnDestroy {
     this.filterLogs();
 
     return false;
+  }
+
+  logToText(log: object) {
+    let logText = '';
+    for (const line of Object.keys(log)) {
+      logText =
+        logText +
+        this.datePipe.transform(log[line].stamp, 'medium') +
+        '\t' +
+        log[line].priority +
+        '\t' +
+        log[line].message +
+        '\n';
+    }
+    return logText;
   }
 }

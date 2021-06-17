@@ -50,7 +50,7 @@ class Protocol {
   virtual void print(std::ostream&) const = 0;
  protected:
   Protocol(proto_t type,
-           ChainedDispatchersRef& dispatcher,
+           ChainedDispatchers& dispatchers,
            SocketConnection& conn);
 
   virtual void trigger_close() = 0;
@@ -65,13 +65,20 @@ class Protocol {
   virtual void notify_write() {};
 
   virtual void on_closed() {}
+ 
+ private:
+  ceph::bufferlist sweep_messages_and_move_to_sent(
+      size_t num_msgs,
+      bool require_keepalive,
+      std::optional<utime_t> keepalive_ack,
+      bool require_ack); 
 
  public:
   const proto_t proto_type;
   SocketRef socket;
 
  protected:
-  ChainedDispatchersRef dispatcher;
+  ChainedDispatchers& dispatchers;
   SocketConnection &conn;
 
   AuthConnectionMetaRef auth_meta;

@@ -199,6 +199,10 @@ protected:
     return r;
   }
 
+  virtual Extents get_copyup_overwrite_extents() const {
+    return {{m_object_off, m_object_len}};
+  }
+
 private:
   /**
    * @verbatim
@@ -276,6 +280,7 @@ public:
 
 protected:
   void add_write_ops(neorados::WriteOp *wr) override;
+  void add_write_hint(neorados::WriteOp *wr) override;
 
 private:
   ceph::bufferlist m_write_data;
@@ -304,7 +309,6 @@ public:
         } else {
           m_discard_action = DISCARD_ACTION_TRUNCATE;
         }
-        this->m_object_len = 0;
       } else {
         m_discard_action = DISCARD_ACTION_REMOVE;
       }
@@ -426,6 +430,10 @@ protected:
 
   int filter_write_result(int r) const override;
 
+  Extents get_copyup_overwrite_extents() const override {
+    return {};
+  }
+
 private:
   ceph::bufferlist m_cmp_bl;
   ceph::bufferlist m_write_bl;
@@ -476,8 +484,7 @@ private:
   void list_from_parent();
   void handle_list_from_parent(int r);
 
-  void zero_initial_extent(const interval_set<uint64_t>& written_extents,
-                           bool dne);
+  void zero_extent(uint64_t snap_id, bool dne);
 };
 
 } // namespace io

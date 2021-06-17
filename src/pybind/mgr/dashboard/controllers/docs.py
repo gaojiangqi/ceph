@@ -1,14 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
-
 import logging
 from typing import Any, Dict, List, Union
 
 import cherrypy
 
-from .. import mgr
+from .. import DEFAULT_VERSION, mgr
 from ..api.doc import Schema, SchemaInput, SchemaType
-from . import ENDPOINT_MAP, BaseController, Controller, Endpoint, allow_empty_body
+from . import ENDPOINT_MAP, BaseController, Controller, Endpoint
 
 NO_DESCRIPTION_AVAILABLE = "*No description available*"
 
@@ -185,7 +183,7 @@ class Docs(BaseController):
         return schema.as_dict()
 
     @classmethod
-    def _gen_responses(cls, method, resp_object=None):
+    def _gen_responses(cls, method, resp_object=None, version=None):
         resp: Dict[str, Dict[str, Union[str, Any]]] = {
             '400': {
                 "description": "Operation exception. Please check the "
@@ -203,24 +201,38 @@ class Docs(BaseController):
                                "response body for the stack trace."
             }
         }
+
+        if not version:
+            version = DEFAULT_VERSION
+
         if method.lower() == 'get':
-            resp['200'] = {'description': "OK"}
+            resp['200'] = {'description': "OK",
+                           'content': {'application/vnd.ceph.api.v{}+json'.format(version):
+                                       {'type': 'object'}}}
         if method.lower() == 'post':
-            resp['201'] = {'description': "Resource created."}
+            resp['201'] = {'description': "Resource created.",
+                           'content': {'application/vnd.ceph.api.v{}+json'.format(version):
+                                       {'type': 'object'}}}
         if method.lower() == 'put':
-            resp['200'] = {'description': "Resource updated."}
+            resp['200'] = {'description': "Resource updated.",
+                           'content': {'application/vnd.ceph.api.v{}+json'.format(version):
+                                       {'type': 'object'}}}
         if method.lower() == 'delete':
-            resp['204'] = {'description': "Resource deleted."}
+            resp['204'] = {'description': "Resource deleted.",
+                           'content': {'application/vnd.ceph.api.v{}+json'.format(version):
+                                       {'type': 'object'}}}
         if method.lower() in ['post', 'put', 'delete']:
             resp['202'] = {'description': "Operation is still executing."
-                                          " Please check the task queue."}
+                                          " Please check the task queue.",
+                           'content': {'application/vnd.ceph.api.v{}+json'.format(version):
+                                       {'type': 'object'}}}
 
         if resp_object:
             for status_code, response_body in resp_object.items():
                 if status_code in resp:
                     resp[status_code].update({
                         'content': {
-                            'application/json': {
+                            'application/vnd.ceph.api.v{}+json'.format(version): {
                                 'schema': cls._gen_schema_for_content(response_body)}}})
 
         return resp
@@ -253,7 +265,7 @@ class Docs(BaseController):
         return parameters
 
     @classmethod
-    def _gen_paths(cls, all_endpoints):
+    def gen_paths(cls, all_endpoints):
         # pylint: disable=R0912
         method_order = ['get', 'post', 'put', 'delete']
         paths = {}
@@ -273,8 +285,19 @@ class Docs(BaseController):
                 func = endpoint.func
 
                 summary = ''
+                version = ''
                 resp = {}
                 p_info = []
+
+                if hasattr(func, '__method_map_method__'):
+                    version = func.__method_map_method__['version']
+
+                elif hasattr(func, '__resource_method__'):
+                    version = func.__resource_method__['version']
+
+                elif hasattr(func, '__collection_method__'):
+                    version = func.__collection_method__['version']
+
                 if hasattr(func, 'doc_info'):
                     if func.doc_info['summary']:
                         summary = func.doc_info['summary']
@@ -294,7 +317,7 @@ class Docs(BaseController):
                     'tags': [cls._get_tag(endpoint)],
                     'description': func.__doc__,
                     'parameters': params,
-                    'responses': cls._gen_responses(method, resp)
+                    'responses': cls._gen_responses(method, resp, version)
                 }
                 if summary:
                     methods[method.lower()]['summary'] = summary
@@ -330,7 +353,7 @@ class Docs(BaseController):
         host = cherrypy.request.base.split('://', 1)[1] if not offline else 'example.com'
         logger.debug("Host: %s", host)
 
-        paths = cls._gen_paths(all_endpoints)
+        paths = cls.gen_paths(all_endpoints)
 
         if not base_url:
             base_url = "/"
@@ -365,96 +388,13 @@ class Docs(BaseController):
 
         return spec
 
-    @Endpoint(path="api.json")
-    def api_json(self):
+    @Endpoint(path="openapi.json", version=None)
+    def open_api_json(self):
         return self._gen_spec(False, "/")
 
-    @Endpoint(path="api-all.json")
+    @Endpoint(path="api-all.json", version=None)
     def api_all_json(self):
         return self._gen_spec(True, "/")
-
-    def _swagger_ui_page(self, all_endpoints=False, token=None):
-        base = cherrypy.request.base
-        if all_endpoints:
-            spec_url = "{}/docs/api-all.json".format(base)
-        else:
-            spec_url = "{}/docs/api.json".format(base)
-
-        auth_header = cherrypy.request.headers.get('authorization')
-        jwt_token = ""
-        if auth_header is not None:
-            scheme, params = auth_header.split(' ', 1)
-            if scheme.lower() == 'bearer':
-                jwt_token = params
-        else:
-            if token is not None:
-                jwt_token = token
-
-        api_key_callback = """, onComplete: () => {{
-                        ui.preauthorizeApiKey('jwt', '{}');
-                    }}
-        """.format(jwt_token)
-
-        page = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="referrer" content="no-referrer" />
-            <link rel="stylesheet" type="text/css"
-                  href="/swagger-ui.css" >
-            <style>
-                html
-                {{
-                    box-sizing: border-box;
-                    overflow: -moz-scrollbars-vertical;
-                    overflow-y: scroll;
-                }}
-                *,
-                *:before,
-                *:after
-                {{
-                    box-sizing: inherit;
-                }}
-                body {{
-                    margin:0;
-                    background: #fafafa;
-                }}
-            </style>
-        </head>
-        <body>
-        <div id="swagger-ui"></div>
-        <script src="/swagger-ui-bundle.js">
-        </script>
-        <script>
-            window.onload = function() {{
-                const ui = SwaggerUIBundle({{
-                    url: '{}',
-                    dom_id: '#swagger-ui',
-                    presets: [
-                        SwaggerUIBundle.presets.apis
-                    ],
-                    layout: "BaseLayout"
-                    {}
-                }})
-                window.ui = ui
-            }}
-        </script>
-        </body>
-        </html>
-        """.format(spec_url, api_key_callback)
-
-        return page
-
-    @Endpoint(json_response=False)
-    def __call__(self, all_endpoints=False):
-        return self._swagger_ui_page(all_endpoints)
-
-    @Endpoint('POST', path="/", json_response=False,
-              query_params="{all_endpoints}")
-    @allow_empty_body
-    def _with_token(self, token, all_endpoints=False):
-        return self._swagger_ui_page(all_endpoints, token)
 
 
 if __name__ == "__main__":

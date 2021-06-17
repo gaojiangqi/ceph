@@ -15,6 +15,10 @@
 #define CEPH_CEPH_LL_CLIENT_H
 #include <stdint.h>
 
+#ifdef _WIN32
+#include "include/win32/fs_compat.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 
@@ -97,6 +101,14 @@ struct ceph_statx {
  * others in the future, we disallow setting any that aren't recognized.
  */
 #define CEPH_REQ_FLAG_MASK		(AT_SYMLINK_NOFOLLOW|AT_NO_ATTR_SYNC)
+
+/* fallocate mode flags */
+#ifndef FALLOC_FL_KEEP_SIZE
+#define FALLOC_FL_KEEP_SIZE 0x01
+#endif
+#ifndef FALLOC_FL_PUNCH_HOLE
+#define FALLOC_FL_PUNCH_HOLE 0x02
+#endif
 
 /* delegation recalls */
 typedef void (*ceph_deleg_cb_t)(Fh *fh, void *priv);

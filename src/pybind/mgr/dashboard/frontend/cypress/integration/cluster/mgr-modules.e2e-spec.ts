@@ -5,6 +5,7 @@ describe('Manager modules page', () => {
 
   beforeEach(() => {
     cy.login();
+    Cypress.Cookies.preserveOnce('token');
     mgrmodules.navigateTo();
   });
 
@@ -52,7 +53,7 @@ describe('Manager modules page', () => {
         {
           id: 'pool_name',
           newValue: 'sox',
-          oldValue: 'device_health_metrics'
+          oldValue: '.mgr'
         },
         {
           id: 'retention_period',

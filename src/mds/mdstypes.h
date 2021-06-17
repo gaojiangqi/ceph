@@ -5,7 +5,6 @@
 
 #include "include/int_types.h"
 
-#include <math.h>
 #include <ostream>
 #include <set>
 #include <map>
@@ -17,12 +16,14 @@
 #include "common/StackStringStream.h"
 #include "common/entity_name.h"
 
+#include "include/compat.h"
 #include "include/Context.h"
 #include "include/frag.h"
 #include "include/xlist.h"
 #include "include/interval_set.h"
 #include "include/compact_set.h"
 #include "include/fs_types.h"
+#include "include/ceph_fs.h"
 
 #include "inode_backtrace.h"
 
@@ -41,13 +42,7 @@
 #define MAX_MDS                   0x100
 #define NUM_STRAY                 10
 
-#define MDS_INO_ROOT              1
-
-// No longer created but recognised in existing filesystems
-// so that we don't try to fragment it.
-#define MDS_INO_CEPH              2
-
-#define MDS_INO_GLOBAL_SNAPREALM  3
+// Inode numbers 1,2 and 4 please see CEPH_INO_* in include/ceph_fs.h
 
 #define MDS_INO_MDSDIR_OFFSET     (1*MAX_MDS)
 #define MDS_INO_STRAY_OFFSET      (6*MAX_MDS)
@@ -66,9 +61,11 @@
 #define MDS_INO_IS_STRAY(i)  ((i) >= MDS_INO_STRAY_OFFSET  && (i) < (MDS_INO_STRAY_OFFSET+(MAX_MDS*NUM_STRAY)))
 #define MDS_INO_IS_MDSDIR(i) ((i) >= MDS_INO_MDSDIR_OFFSET && (i) < (MDS_INO_MDSDIR_OFFSET+MAX_MDS))
 #define MDS_INO_MDSDIR_OWNER(i) (signed ((unsigned (i)) - MDS_INO_MDSDIR_OFFSET))
-#define MDS_INO_IS_BASE(i)   ((i) == MDS_INO_ROOT || (i) == MDS_INO_GLOBAL_SNAPREALM || MDS_INO_IS_MDSDIR(i))
+#define MDS_INO_IS_BASE(i)   ((i) == CEPH_INO_ROOT || (i) == CEPH_INO_GLOBAL_SNAPREALM || MDS_INO_IS_MDSDIR(i))
 #define MDS_INO_STRAY_OWNER(i) (signed (((unsigned (i)) - MDS_INO_STRAY_OFFSET) / NUM_STRAY))
 #define MDS_INO_STRAY_INDEX(i) (((unsigned (i)) - MDS_INO_STRAY_OFFSET) % NUM_STRAY)
+
+#define MDS_IS_PRIVATE_INO(i) ((i) < MDS_INO_SYSTEM_BASE && (i) >= MDS_INO_MDSDIR_OFFSET)
 
 typedef int32_t mds_rank_t;
 constexpr mds_rank_t MDS_RANK_NONE		= -1;
@@ -627,6 +624,8 @@ struct inode_t {
 
   std::basic_string<char,std::char_traits<char>,Allocator<char>> stray_prior_path; //stores path before unlink
 
+  bool fscrypt = false; // fscrypt enabled ?
+
 private:
   bool older_is_consistent(const inode_t &other) const;
 };
@@ -635,7 +634,7 @@ private:
 template<template<typename> class Allocator>
 void inode_t<Allocator>::encode(ceph::buffer::list &bl, uint64_t features) const
 {
-  ENCODE_START(16, 6, bl);
+  ENCODE_START(17, 6, bl);
 
   encode(ino, bl);
   encode(rdev, bl);
@@ -690,13 +689,15 @@ void inode_t<Allocator>::encode(ceph::buffer::list &bl, uint64_t features) const
   encode(export_ephemeral_random_pin, bl);
   encode(export_ephemeral_distributed_pin, bl);
 
+  encode(fscrypt, bl);
+
   ENCODE_FINISH(bl);
 }
 
 template<template<typename> class Allocator>
 void inode_t<Allocator>::decode(ceph::buffer::list::const_iterator &p)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(16, 6, 6, p);
+  DECODE_START_LEGACY_COMPAT_LEN(17, 6, 6, p);
 
   decode(ino, p);
   decode(rdev, p);
@@ -792,6 +793,12 @@ void inode_t<Allocator>::decode(ceph::buffer::list::const_iterator &p)
   } else {
     export_ephemeral_random_pin = 0;
     export_ephemeral_distributed_pin = false;
+  }
+
+  if (struct_v >= 17) {
+    decode(fscrypt, p);
+  } else {
+    fscrypt = 0;
   }
 
   DECODE_FINISH(p);
@@ -1323,7 +1330,6 @@ struct session_info_t {
 
   void clear_meta() {
     prealloc_inos.clear();
-    used_inos.clear();
     completed_requests.clear();
     completed_flushes.clear();
     client_metadata.clear();
@@ -1337,7 +1343,6 @@ struct session_info_t {
   entity_inst_t inst;
   std::map<ceph_tid_t,inodeno_t> completed_requests;
   interval_set<inodeno_t> prealloc_inos;   // preallocated, ready to use.
-  interval_set<inodeno_t> used_inos;       // journaling use
   client_metadata_t client_metadata;
   std::set<ceph_tid_t> completed_flushes;
   EntityName auth_name;

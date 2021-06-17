@@ -18,7 +18,7 @@
 #include "include/types.h"
 #include "messages/MMDSOp.h"
 
-class MExportDirCancel : public MMDSOp {
+class MExportDirCancel final : public MMDSOp {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -33,7 +33,7 @@ protected:
     MMDSOp{MSG_MDS_EXPORTDIRCANCEL, HEAD_VERSION, COMPAT_VERSION}, dirfrag(df) {
     set_tid(tid);
   }
-  ~MExportDirCancel() override {}
+  ~MExportDirCancel() final {}
 
 public:
   std::string_view get_type_name() const override { return "ExCancel"; }
@@ -53,6 +53,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

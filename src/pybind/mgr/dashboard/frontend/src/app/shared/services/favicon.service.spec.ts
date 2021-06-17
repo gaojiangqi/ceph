@@ -1,7 +1,8 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { CssHelper } from '~/app/shared/classes/css-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { FaviconService } from './favicon.service';
 
 describe('FaviconService', () => {
@@ -9,7 +10,7 @@ describe('FaviconService', () => {
 
   configureTestBed({
     imports: [HttpClientTestingModule],
-    providers: [FaviconService]
+    providers: [FaviconService, CssHelper]
   });
 
   beforeEach(() => {

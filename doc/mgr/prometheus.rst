@@ -29,9 +29,17 @@ Configuration
 
     The Prometheus manager module needs to be restarted for configuration changes to be applied.
 
+.. mgr_module:: prometheus
+.. confval:: server_addr
+.. confval:: server_port
+.. confval:: scrape_interval
+.. confval:: stale_cache_strategy
+.. confval:: rbd_stats_pools
+.. confval:: rbd_stats_pools_refresh_interval
+
 By default the module will accept HTTP requests on port ``9283`` on all IPv4
 and IPv6 addresses on the host.  The port and listen address are both
-configurable with ``ceph config-key set``, with keys
+configurable with ``ceph config set``, with keys
 ``mgr/prometheus/server_addr`` and ``mgr/prometheus/server_port``.  This port
 is registered with Prometheus's `registry
 <https://github.com/prometheus/prometheus/wiki/Default-port-allocations>`_.
@@ -43,11 +51,10 @@ is registered with Prometheus's `registry
 
 .. warning::
 
-    The ``scrape_interval`` of this module should always be set to match
+    The :confval:`mgr/prometheus/scrape_interval` of this module should always be set to match
     Prometheus' scrape interval to work properly and not cause any issues.
     
-The Prometheus manager module is, by default, configured with a scrape interval
-of 15 seconds.  The scrape interval in the module is used for caching purposes
+The scrape interval in the module is used for caching purposes
 and to determine when a cache is stale.
 
 It is not recommended to use a scrape interval below 10 seconds.  It is

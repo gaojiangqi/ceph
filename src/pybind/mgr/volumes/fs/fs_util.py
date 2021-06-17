@@ -40,8 +40,7 @@ def create_mds(mgr, fs_name, placement):
                                     service_id=fs_name,
                                     placement=PlacementSpec.from_string(placement))
     try:
-        completion = mgr.apply_mds(spec)
-        mgr._orchestrator_wait([completion])
+        completion = mgr.apply([spec], no_overwrite=True)
         orchestrator.raise_if_exception(completion)
     except (ImportError, orchestrator.OrchestratorError):
         return 0, "", "Volume created successfully (no MDS daemons created)"
@@ -75,6 +74,34 @@ def listdir(fs, dirpath):
         raise VolumeException(-e.args[0], e.args[1])
     return dirs
 
+def is_inherited_snap(snapname):
+    """
+    Returns True if the snapname is inherited else False
+    """
+    return snapname.startswith("_")
+
+def listsnaps(fs, volspec, snapdirpath, filter_inherited_snaps=False):
+    """
+    Get the snap names from a given snap directory path
+    """
+    if os.path.basename(snapdirpath) != volspec.snapshot_prefix.encode('utf-8'):
+        raise VolumeException(-errno.EINVAL, "Not a snap directory: {0}".format(snapdirpath))
+    snaps = []
+    try:
+        with fs.opendir(snapdirpath) as dir_handle:
+            d = fs.readdir(dir_handle)
+            while d:
+                if (d.d_name not in (b".", b"..")) and d.is_dir():
+                    d_name = d.d_name.decode('utf-8')
+                    if not is_inherited_snap(d_name):
+                        snaps.append(d.d_name)
+                    elif is_inherited_snap(d_name) and not filter_inherited_snaps:
+                        snaps.append(d.d_name)
+                d = fs.readdir(dir_handle)
+    except cephfs.Error as e:
+        raise VolumeException(-e.args[0], e.args[1])
+    return snaps
+
 def list_one_entry_at_a_time(fs, dirpath):
     """
     Get a directory entry (one entry a time)
@@ -95,7 +122,7 @@ def copy_file(fs, src, dst, mode, cancel_check=None):
     """
     src_fd = dst_fd = None
     try:
-        src_fd = fs.open(src, os.O_RDONLY);
+        src_fd = fs.open(src, os.O_RDONLY)
         dst_fd = fs.open(dst, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, mode)
     except cephfs.Error as e:
         if src_fd is not None:

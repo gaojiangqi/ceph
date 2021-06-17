@@ -22,7 +22,7 @@ class PoolTest(DashboardTestCase):
     }, allow_unknown=True)
 
     pool_list_stat_schema = JObj(sub_elems={
-        'latest': JUnion([int,float]),
+        'latest': JUnion([int, float]),
         'rate': float,
         'rates': JList(JAny(none=False)),
     })
@@ -84,6 +84,7 @@ class PoolTest(DashboardTestCase):
         self.assertStatus(204)
 
     def _validate_pool_properties(self, data, pool, timeout=DashboardTestCase.TIMEOUT_HEALTH_CLEAR):
+        # pylint: disable=too-many-branches
         for prop, value in data.items():
             if prop == 'pool_type':
                 self.assertEqual(pool['type'], value)
@@ -162,14 +163,14 @@ class PoolTest(DashboardTestCase):
         self.assertStatus(403)
 
     def test_pool_configuration(self):
-        pool_name = 'device_health_metrics'
+        pool_name = '.mgr'
         data = self._get('/api/pool/{}/configuration'.format(pool_name))
         self.assertStatus(200)
         self.assertSchema(data, JList(JObj({
-             'name': str,
-             'value': str,
-             'source': int
-             })))
+            'name': str,
+            'value': str,
+            'source': int
+        })))
 
     def test_pool_list(self):
         data = self._get("/api/pool")

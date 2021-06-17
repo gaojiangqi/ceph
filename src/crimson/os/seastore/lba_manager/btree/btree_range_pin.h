@@ -32,13 +32,13 @@ struct lba_node_meta_t {
 
   static lba_node_meta_t merge_from(
     const lba_node_meta_t &lhs, const lba_node_meta_t &rhs) {
-    assert(lhs.depth == rhs.depth);
+    ceph_assert(lhs.depth == rhs.depth);
     return lba_node_meta_t{lhs.begin, rhs.end, lhs.depth};
   }
 
   static std::pair<lba_node_meta_t, lba_node_meta_t>
   rebalance(const lba_node_meta_t &lhs, const lba_node_meta_t &rhs, laddr_t pivot) {
-    assert(lhs.depth == rhs.depth);
+    ceph_assert(lhs.depth == rhs.depth);
     return std::make_pair(
       lba_node_meta_t{lhs.begin, pivot, lhs.depth},
       lba_node_meta_t{pivot, rhs.end, lhs.depth});
@@ -113,8 +113,17 @@ public:
     range = nrange;
   }
   void set_extent(CachedExtent *nextent) {
-    assert(!extent);
+    ceph_assert(!extent);
     extent = nextent;
+  }
+
+  CachedExtent &get_extent() {
+    assert(extent);
+    return *extent;
+  }
+
+  bool has_ref() {
+    return !!ref;
   }
 
   void take_pin(btree_range_pin_t &other);
@@ -212,13 +221,29 @@ public:
   void retire(btree_range_pin_t &pin);
   void check_parent(btree_range_pin_t &pin);
 
+  template <typename F>
+  void scan(F &&f) {
+    for (auto &i : pins) {
+      std::invoke(f, i);
+    }
+  }
+
   ~btree_pin_set_t() {
-    assert(pins.empty());
+    ceph_assert(pins.empty());
   }
 };
 
 class BtreeLBAPin : public LBAPin {
   friend class BtreeLBAManager;
+
+  /**
+   * parent
+   *
+   * populated until link_extent is called to ensure cache residence
+   * until add_pin is called.
+   */
+  CachedExtentRef parent;
+
   paddr_t paddr;
   btree_range_pin_t pin;
 
@@ -226,9 +251,10 @@ public:
   BtreeLBAPin() = default;
 
   BtreeLBAPin(
+    CachedExtentRef parent,
     paddr_t paddr,
     lba_node_meta_t &&meta)
-    : paddr(paddr) {
+    : parent(parent), paddr(paddr) {
     pin.set_range(std::move(meta));
   }
 
@@ -237,7 +263,7 @@ public:
   }
 
   extent_len_t get_length() const final {
-    assert(pin.range.end > pin.range.begin);
+    ceph_assert(pin.range.end > pin.range.begin);
     return pin.range.end - pin.range.begin;
   }
 
@@ -253,11 +279,16 @@ public:
     auto ret = std::unique_ptr<BtreeLBAPin>(new BtreeLBAPin);
     ret->pin.set_range(pin.range);
     ret->paddr = paddr;
+    ret->parent = parent;
     return ret;
   }
 
   void take_pin(LBAPin &opin) final {
     pin.take_pin(static_cast<BtreeLBAPin&>(opin).pin);
+  }
+
+  bool has_been_invalidated() const final {
+    return parent->has_been_invalidated();
   }
 };
 

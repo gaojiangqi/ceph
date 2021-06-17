@@ -19,7 +19,7 @@
 #include "mds/mdstypes.h"
 #include "messages/MMDSOp.h"
 
-class MCacheExpire : public MMDSOp {
+class MCacheExpire final : public MMDSOp {
 private:
   __s32 from;
 
@@ -68,7 +68,7 @@ protected:
   MCacheExpire(int f) :
     MMDSOp{MSG_MDS_CACHEEXPIRE},
     from(f) { }
-  ~MCacheExpire() override {}
+  ~MCacheExpire() final {}
 
 public:
   std::string_view get_type_name() const override { return "cache_expire";}
@@ -105,6 +105,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 WRITE_CLASS_ENCODER(MCacheExpire::realm)

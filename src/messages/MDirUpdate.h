@@ -18,7 +18,7 @@
 
 #include "messages/MMDSOp.h"
 
-class MDirUpdate : public MMDSOp {
+class MDirUpdate final : public MMDSOp {
 public:
   mds_rank_t get_source_mds() const { return from_mds; }
   dirfrag_t get_dirfrag() const { return dirfrag; }
@@ -57,7 +57,7 @@ public:
   }
 
 protected:
-  ~MDirUpdate() {}
+  ~MDirUpdate() final {}
   MDirUpdate() : MMDSOp(MSG_MDS_DIRUPDATE, HEAD_VERSION, COMPAT_VERSION) {}
   MDirUpdate(mds_rank_t f,
 	     dirfrag_t dirfrag,
@@ -93,6 +93,8 @@ private:
   static constexpr int COMPAT_VERSION = 1;
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

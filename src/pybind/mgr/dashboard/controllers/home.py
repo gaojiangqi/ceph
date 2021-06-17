@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import json
 import logging
@@ -87,7 +86,7 @@ class HomeController(BaseController, LanguageMixin):
         result.sort(key=lambda l: l[0])
         result.sort(key=lambda l: l[1], reverse=True)
         logger.debug("language preference: %s", result)
-        return [l[0] for l in result]
+        return [r[0] for r in result]
 
     def _language_dir(self, langs):
         for lang in langs:

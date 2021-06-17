@@ -441,7 +441,9 @@ deploy at least three (and preferably five) monitors in a Ceph cluster, the chan
 failure is rare. But unplanned power-downs in a data center with improperly
 configured disk/fs settings could fail the underlying file system, and hence
 kill all the monitors. In this case, we can recover the monitor store with the
-information stored in OSDs.::
+information stored in OSDs.
+
+.. code-block:: bash
 
   ms=/root/mon-store
   mkdir $ms
@@ -472,7 +474,10 @@ information stored in OSDs.::
   # deployed
   ceph-authtool /path/to/admin.keyring --add-key 'AQDN8kBe9PLWARAAZwxXMr+n85SBYbSlLcZnMA==' -n mgr.x \
     --cap mon 'allow profile mgr' --cap osd 'allow *' --cap mds 'allow *'
-  # if your monitors' ids are not single characters like 'a', 'b', 'c', please
+  # If your monitors' ids are not sorted by ip address, please specify them in order.
+  # For example. if mon 'a' is 10.0.0.3, mon 'b' is 10.0.0.2, and mon 'c' is  10.0.0.4,
+  # please passing "--mon-ids b a c".
+  # In addition, if your monitors' ids are not single characters like 'a', 'b', 'c', please
   # specify them in the command line by passing them as arguments of the "--mon-ids"
   # option. if you are not sure, please check your ceph.conf to see if there is any
   # sections named like '[mon.foo]'. don't pass the "--mon-ids" option, if you are

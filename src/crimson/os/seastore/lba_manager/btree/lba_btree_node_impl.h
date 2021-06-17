@@ -32,14 +32,14 @@ constexpr size_t LBA_BLOCK_SIZE = 4096;
 struct lba_node_meta_le_t {
   laddr_le_t begin = laddr_le_t(0);
   laddr_le_t end = laddr_le_t(0);
-  depth_le_t depth = init_les32(0);
+  depth_le_t depth = init_depth_le(0);
 
   lba_node_meta_le_t() = default;
   lba_node_meta_le_t(const lba_node_meta_le_t &) = default;
   explicit lba_node_meta_le_t(const lba_node_meta_t &val)
-    : begin(init_le64(val.begin)),
-      end(init_le64(val.end)),
-      depth(init_les32(val.depth)) {}
+    : begin(ceph_le64(val.begin)),
+      end(ceph_le64(val.end)),
+      depth(init_depth_le(val.depth)) {}
 
   operator lba_node_meta_t() const {
     return lba_node_meta_t{ begin, end, depth };
@@ -99,6 +99,10 @@ struct LBAInternalNode
     laddr_t addr,
     extent_len_t len) final;
 
+  lookup_pin_ret lookup_pin(
+    op_context_t c,
+    laddr_t addr) final;
+
   insert_ret insert(
     op_context_t c,
     laddr_t laddr,
@@ -107,6 +111,11 @@ struct LBAInternalNode
   mutate_mapping_ret mutate_mapping(
     op_context_t c,
     laddr_t laddr,
+    mutate_func_t &&f) final;
+  mutate_mapping_ret mutate_mapping_internal(
+    op_context_t c,
+    laddr_t laddr,
+    bool is_root,
     mutate_func_t &&f) final;
 
   mutate_internal_address_ret mutate_internal_address(
@@ -120,6 +129,16 @@ struct LBAInternalNode
     laddr_t min,
     laddr_t max,
     extent_len_t len) final;
+
+  scan_mappings_ret scan_mappings(
+    op_context_t c,
+    laddr_t begin,
+    laddr_t end,
+    scan_mappings_func_t &f) final;
+
+  scan_mapped_space_ret scan_mapped_space(
+    op_context_t c,
+    scan_mapped_space_func_t &f) final;
 
   std::tuple<LBANodeRef, LBANodeRef, laddr_t>
   make_split_children(op_context_t c) final {
@@ -174,8 +193,6 @@ struct LBAInternalNode
   }
 
   /**
-   * resolve_relative_addrs
-   *
    * Internal relative addresses on read or in memory prior to commit
    * are either record or block relative depending on whether this
    * physical node is is_initial_pending() or just is_pending().
@@ -185,6 +202,26 @@ struct LBAInternalNode
    * based on base.
    */
   void resolve_relative_addrs(paddr_t base) final;
+  void node_resolve_vals(iterator from, iterator to) const final {
+    if (is_initial_pending()) {
+      for (auto i = from; i != to; ++i) {
+	if (i->get_val().is_relative()) {
+	  assert(i->get_val().is_block_relative());
+	  i->set_val(get_paddr().add_relative(i->get_val()));
+	}
+      }
+    }
+  }
+  void node_unresolve_vals(iterator from, iterator to) const final {
+    if (is_initial_pending()) {
+      for (auto i = from; i != to; ++i) {
+	if (i->get_val().is_relative()) {
+	  assert(i->get_val().is_record_relative());
+	  i->set_val(i->get_val() - get_paddr());
+	}
+      }
+    }
+  }
 
   extent_types_t get_type() const final {
     return type;
@@ -218,7 +255,7 @@ struct LBAInternalNode
   }
 
   bool at_min_capacity() const {
-    return get_size() == get_capacity() / 2;
+    return get_size() == (get_capacity() / 2);
   }
 
   /// returns iterators containing [l, r)
@@ -238,9 +275,7 @@ struct LBAInternalNode
     return std::make_pair(retl, retr);
   }
 
-  using split_ertr = crimson::errorator<
-    crimson::ct_error::input_output_error
-    >;
+  using split_ertr = base_ertr;
   using split_ret = split_ertr::future<LBANodeRef>;
   split_ret split_entry(
     op_context_t c,
@@ -248,15 +283,14 @@ struct LBAInternalNode
     internal_iterator_t,
     LBANodeRef entry);
 
-  using merge_ertr = crimson::errorator<
-    crimson::ct_error::input_output_error
-    >;
+  using merge_ertr = base_ertr;
   using merge_ret = merge_ertr::future<LBANodeRef>;
   merge_ret merge_entry(
     op_context_t c,
     laddr_t addr,
     internal_iterator_t,
-    LBANodeRef entry);
+    LBANodeRef entry,
+    bool is_root);
 
   /// returns iterator for subtree containing laddr
   internal_iterator_t get_containing_child(laddr_t laddr);
@@ -287,18 +321,18 @@ constexpr size_t LEAF_NODE_CAPACITY = 145;
  * On disk layout for lba_map_val_t.
  */
 struct lba_map_val_le_t {
-  extent_len_le_t len = init_extent_len_le_t(0);
+  extent_len_le_t len = init_extent_len_le(0);
   paddr_le_t paddr;
-  ceph_le32 refcount = init_le32(0);
-  ceph_le32 checksum = init_le32(0);
+  ceph_le32 refcount{0};
+  ceph_le32 checksum{0};
 
   lba_map_val_le_t() = default;
   lba_map_val_le_t(const lba_map_val_le_t &) = default;
   explicit lba_map_val_le_t(const lba_map_val_t &val)
-    : len(init_extent_len_le_t(val.len)),
+    : len(init_extent_len_le(val.len)),
       paddr(paddr_le_t(val.paddr)),
-      refcount(init_le32(val.refcount)),
-      checksum(init_le32(val.checksum)) {}
+      refcount(val.refcount),
+      checksum(val.checksum) {}
 
   operator lba_map_val_t() const {
     return lba_map_val_t{ len, paddr, refcount, checksum };
@@ -344,6 +378,10 @@ struct LBALeafNode
     laddr_t addr,
     extent_len_t len) final;
 
+  lookup_pin_ret lookup_pin(
+    op_context_t c,
+    laddr_t addr) final;
+
   insert_ret insert(
     op_context_t c,
     laddr_t laddr,
@@ -352,6 +390,11 @@ struct LBALeafNode
   mutate_mapping_ret mutate_mapping(
     op_context_t c,
     laddr_t laddr,
+    mutate_func_t &&f) final;
+  mutate_mapping_ret mutate_mapping_internal(
+    op_context_t c,
+    laddr_t laddr,
+    bool is_root,
     mutate_func_t &&f) final;
 
   mutate_internal_address_ret mutate_internal_address(
@@ -365,6 +408,16 @@ struct LBALeafNode
     laddr_t min,
     laddr_t max,
     extent_len_t len) final;
+
+  scan_mappings_ret scan_mappings(
+    op_context_t c,
+    laddr_t begin,
+    laddr_t end,
+    scan_mappings_func_t &f) final;
+
+  scan_mapped_space_ret scan_mapped_space(
+    op_context_t c,
+    scan_mapped_space_func_t &f) final;
 
   std::tuple<LBANodeRef, LBANodeRef, laddr_t>
   make_split_children(op_context_t c) final {
@@ -420,6 +473,31 @@ struct LBALeafNode
 
   // See LBAInternalNode, same concept
   void resolve_relative_addrs(paddr_t base) final;
+  void node_resolve_vals(iterator from, iterator to) const final {
+    if (is_initial_pending()) {
+      for (auto i = from; i != to; ++i) {
+	auto val = i->get_val();
+	if (val.paddr.is_relative()) {
+	  assert(val.paddr.is_block_relative());
+	  val.paddr = get_paddr().add_relative(val.paddr);
+	  i->set_val(val);
+	}
+      }
+    }
+  }
+  void node_unresolve_vals(iterator from, iterator to) const final {
+    if (is_initial_pending()) {
+      for (auto i = from; i != to; ++i) {
+	auto val = i->get_val();
+	if (val.paddr.is_relative()) {
+	  auto val = i->get_val();
+	  assert(val.paddr.is_record_relative());
+	  val.paddr = val.paddr - get_paddr();
+	  i->set_val(val);
+	}
+      }
+    }
+  }
 
   ceph::bufferlist get_delta() final {
     assert(!delta_buffer.empty());
@@ -453,7 +531,7 @@ struct LBALeafNode
   }
 
   bool at_min_capacity() const final {
-    return get_size() == get_capacity();
+    return get_size() == (get_capacity() / 2);
   }
 
   /// returns iterators <lb, ub> containing addresses [l, r)

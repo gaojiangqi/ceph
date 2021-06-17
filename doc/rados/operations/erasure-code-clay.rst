@@ -60,6 +60,7 @@ To create a new clay code profile::
              [scalar_mds={plugin-name}] \
              [technique={technique-name}] \
              [crush-failure-domain={bucket-type}] \
+             [crush-device-class={device-class}] \
              [directory={directory}] \
              [--force]
 
@@ -88,7 +89,7 @@ Where:
 
 :Description: Number of OSDs requested to send data during recovery of
               a single chunk. *d* needs to be chosen such that
-              k+1 <= d <= k+m-1. Larger the *d*, the better the savings.
+              k+1 <= d <= k+m-1. The larger the *d*, the better the savings.
 
 :Type: Integer
 :Required: No.

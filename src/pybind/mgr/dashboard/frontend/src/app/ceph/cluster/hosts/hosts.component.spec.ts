@@ -6,29 +6,44 @@ import { RouterTestingModule } from '@angular/router/testing';
 import { ToastrModule } from 'ngx-toastr';
 import { of } from 'rxjs';
 
+import { CephModule } from '~/app/ceph/ceph.module';
+import { CephSharedModule } from '~/app/ceph/shared/ceph-shared.module';
+import { CoreModule } from '~/app/core/core.module';
+import { HostService } from '~/app/shared/api/host.service';
+import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { TableActionsComponent } from '~/app/shared/datatable/table-actions/table-actions.component';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { OrchestratorFeature } from '~/app/shared/models/orchestrator.enum';
+import { Permissions } from '~/app/shared/models/permissions';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { SharedModule } from '~/app/shared/shared.module';
 import {
   configureTestBed,
   OrchestratorHelper,
   TableActionHelper
-} from '../../../../testing/unit-test-helper';
-import { CoreModule } from '../../../core/core.module';
-import { HostService } from '../../../shared/api/host.service';
-import { OrchestratorService } from '../../../shared/api/orchestrator.service';
-import { TableActionsComponent } from '../../../shared/datatable/table-actions/table-actions.component';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { OrchestratorFeature } from '../../../shared/models/orchestrator.enum';
-import { Permissions } from '../../../shared/models/permissions';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { SharedModule } from '../../../shared/shared.module';
-import { CephModule } from '../../ceph.module';
-import { CephSharedModule } from '../../shared/ceph-shared.module';
+} from '~/testing/unit-test-helper';
 import { HostsComponent } from './hosts.component';
+
+class MockShowForceMaintenanceModal {
+  showModal = false;
+  showModalDialog(msg: string) {
+    if (
+      msg.includes('WARNING') &&
+      !msg.includes('It is NOT safe to stop') &&
+      !msg.includes('ALERT') &&
+      !msg.includes('unable to stop')
+    ) {
+      this.showModal = true;
+    }
+  }
+}
 
 describe('HostsComponent', () => {
   let component: HostsComponent;
   let fixture: ComponentFixture<HostsComponent>;
   let hostListSpy: jasmine.Spy;
   let orchService: OrchestratorService;
+  let showForceMaintenanceModal: MockShowForceMaintenanceModal;
 
   const fakeAuthStorageService = {
     getPermissions: () => {
@@ -54,6 +69,7 @@ describe('HostsComponent', () => {
   });
 
   beforeEach(() => {
+    showForceMaintenanceModal = new MockShowForceMaintenanceModal();
     fixture = TestBed.createComponent(HostsComponent);
     component = fixture.componentInstance;
     hostListSpy = spyOn(TestBed.inject(HostService), 'list');
@@ -100,6 +116,37 @@ describe('HostsComponent', () => {
       );
       expect(spans[0].textContent).toBe(hostname);
     });
+  });
+
+  it('should show force maintenance modal when it is safe to stop host', () => {
+    const errorMsg = `WARNING: Stopping 1 out of 1 daemons in Grafana service.
+                    Service will not be operational with no daemons left. At
+                    least 1 daemon must be running to guarantee service.`;
+    showForceMaintenanceModal.showModalDialog(errorMsg);
+    expect(showForceMaintenanceModal.showModal).toBeTruthy();
+  });
+
+  it('should not show force maintenance modal when error is an ALERT', () => {
+    const errorMsg = `ALERT: Cannot stop active Mgr daemon, Please switch active Mgrs
+                    with 'ceph mgr fail ceph-node-00'`;
+    showForceMaintenanceModal.showModalDialog(errorMsg);
+    expect(showForceMaintenanceModal.showModal).toBeFalsy();
+  });
+
+  it('should not show force maintenance modal when it is not safe to stop host', () => {
+    const errorMsg = `WARNING: Stopping 1 out of 1 daemons in Grafana service.
+                    Service will not be operational with no daemons left. At
+                    least 1 daemon must be running to guarantee service.
+                    It is NOT safe to stop ['mon.ceph-node-00']: not enough
+                    monitors would be available (ceph-node-02) after stopping mons`;
+    showForceMaintenanceModal.showModalDialog(errorMsg);
+    expect(showForceMaintenanceModal.showModal).toBeFalsy();
+  });
+
+  it('should not show force maintenance modal when it is unable to stop host', () => {
+    const errorMsg = 'unable to stop osd.0 because of some unknown reason';
+    showForceMaintenanceModal.showModalDialog(errorMsg);
+    expect(showForceMaintenanceModal.showModal).toBeFalsy();
   });
 
   describe('table actions', () => {

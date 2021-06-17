@@ -7,10 +7,10 @@ import { NgbTypeaheadModule } from '@ng-bootstrap/ng-bootstrap';
 import _ from 'lodash';
 import { ToastrModule } from 'ngx-toastr';
 
-import { configureTestBed, FormHelper } from '../../../../../testing/unit-test-helper';
-import { CephServiceService } from '../../../../shared/api/ceph-service.service';
-import { CdFormGroup } from '../../../../shared/forms/cd-form-group';
-import { SharedModule } from '../../../../shared/shared.module';
+import { CephServiceService } from '~/app/shared/api/ceph-service.service';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { SharedModule } from '~/app/shared/shared.module';
+import { configureTestBed, FormHelper } from '~/testing/unit-test-helper';
 import { ServiceFormComponent } from './service-form.component';
 
 describe('ServiceFormComponent', () => {
@@ -270,7 +270,7 @@ describe('ServiceFormComponent', () => {
 
       it('should submit iscsi with trusted ips', () => {
         formHelper.setValue('ssl', true);
-        formHelper.setValue('trusted_ip_list', '  172.16.0.5,   192.1.1.10  ');
+        formHelper.setValue('trusted_ip_list', ' 172.16.0.5, 192.1.1.10  ');
         component.onSubmit();
         expect(cephServiceService.create).toHaveBeenCalledWith({
           service_type: 'iscsi',
@@ -282,7 +282,7 @@ describe('ServiceFormComponent', () => {
           api_secure: true,
           ssl_cert: '',
           ssl_key: '',
-          trusted_ip_list: ['172.16.0.5', '192.1.1.10']
+          trusted_ip_list: '172.16.0.5, 192.1.1.10'
         });
       });
 
@@ -329,6 +329,74 @@ describe('ServiceFormComponent', () => {
         formHelper.setValue('api_port', 'abc');
         component.onSubmit();
         formHelper.expectError('api_port', 'pattern');
+      });
+    });
+
+    describe('should test service ingress', () => {
+      beforeEach(() => {
+        formHelper.setValue('service_type', 'ingress');
+        formHelper.setValue('backend_service', 'rgw.foo');
+        formHelper.setValue('virtual_ip', '192.168.20.1/24');
+        formHelper.setValue('ssl', false);
+      });
+
+      it('should submit ingress', () => {
+        component.onSubmit();
+        expect(cephServiceService.create).toHaveBeenCalledWith({
+          service_type: 'ingress',
+          placement: {},
+          unmanaged: false,
+          backend_service: 'rgw.foo',
+          service_id: 'rgw.foo',
+          virtual_ip: '192.168.20.1/24',
+          virtual_interface_networks: null,
+          ssl: false
+        });
+      });
+
+      it('should pre-populate the service id', () => {
+        component.prePopulateId();
+        const prePopulatedID = component.serviceForm.getValue('service_id');
+        expect(prePopulatedID).toBe('rgw.foo');
+      });
+
+      it('should submit valid frontend and monitor port', () => {
+        // min value
+        formHelper.setValue('frontend_port', 1);
+        formHelper.setValue('monitor_port', 1);
+        component.onSubmit();
+        formHelper.expectValid('frontend_port');
+        formHelper.expectValid('monitor_port');
+
+        // max value
+        formHelper.setValue('frontend_port', 65535);
+        formHelper.setValue('monitor_port', 65535);
+        component.onSubmit();
+        formHelper.expectValid('frontend_port');
+        formHelper.expectValid('monitor_port');
+      });
+
+      it('should submit invalid frontend and monitor port', () => {
+        // min
+        formHelper.setValue('frontend_port', 0);
+        formHelper.setValue('monitor_port', 0);
+        component.onSubmit();
+        formHelper.expectError('frontend_port', 'min');
+        formHelper.expectError('monitor_port', 'min');
+
+        // max
+        formHelper.setValue('frontend_port', 65536);
+        formHelper.setValue('monitor_port', 65536);
+        component.onSubmit();
+        formHelper.expectError('frontend_port', 'max');
+        formHelper.expectError('monitor_port', 'max');
+
+        // pattern
+        formHelper.setValue('frontend_port', 'abc');
+        formHelper.setValue('monitor_port', 'abc');
+        component.onSubmit();
+        formHelper.expectError('frontend_port', 'pattern');
+        formHelper.expectError('monitor_port', 'pattern');
       });
     });
   });

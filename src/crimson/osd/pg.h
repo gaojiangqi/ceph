@@ -1,16 +1,14 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+// vim: ts=8 sw=2 smarttab expandtab
 
 #pragma once
 
 #include <memory>
 #include <optional>
-#include <boost/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <boost/smart_ptr/local_shared_ptr.hpp>
 #include <seastar/core/future.hh>
 #include <seastar/core/shared_future.hh>
-#include <seastar/core/sleep.hh>
 
 #include "common/dout.h"
 #include "crimson/net/Fwd.h"
@@ -21,9 +19,12 @@
 #include "crimson/osd/object_context.h"
 #include "osd/PeeringState.h"
 
+#include "crimson/common/interruptible_future.h"
 #include "crimson/common/type_helpers.h"
 #include "crimson/os/futurized_collection.h"
 #include "crimson/osd/backfill_state.h"
+#include "crimson/osd/pg_interval_interrupt_condition.h"
+#include "crimson/osd/ops_executer.h"
 #include "crimson/osd/osd_operations/client_request.h"
 #include "crimson/osd/osd_operations/peering_event.h"
 #include "crimson/osd/osd_operations/replicated_request.h"
@@ -34,8 +35,8 @@
 #include "crimson/osd/pg_recovery_listener.h"
 #include "crimson/osd/recovery_backend.h"
 
-class OSDMap;
 class MQuery;
+class OSDMap;
 class PGBackend;
 class PGPeeringEvent;
 class osd_op_params_t;
@@ -54,6 +55,7 @@ namespace crimson::os {
 
 namespace crimson::osd {
 class ClientRequest;
+class OpsExecuter;
 
 class PG : public boost::intrusive_ref_counter<
   PG,
@@ -78,6 +80,11 @@ class PG : public boost::intrusive_ref_counter<
   seastar::timer<seastar::lowres_clock> renew_lease_timer;
 
 public:
+  template <typename T = void>
+  using interruptible_future =
+    ::crimson::interruptible::interruptible_future<
+      ::crimson::osd::IOInterruptCondition, T>;
+
   PG(spg_t pgid,
      pg_shard_t pg_shard,
      crimson::os::CollectionRef coll_ref,
@@ -150,16 +157,16 @@ public:
     // Not needed yet -- mainly for scrub scheduling
   }
 
-  void scrub_requested(bool deep, bool repair, bool need_auto = false) final;
+  void scrub_requested(scrub_level_t scrub_level, scrub_type_t scrub_type) final;
 
   uint64_t get_snap_trimq_size() const final {
     return 0;
   }
 
   void send_cluster_message(
-    int osd, MessageRef m,
+    int osd, MessageURef m,
     epoch_t epoch, bool share_map_update=false) final {
-    (void)shard_services.send_to_osd(osd, m, epoch);
+    (void)shard_services.send_to_osd(osd, std::move(m), epoch);
   }
 
   void send_pg_created(pg_t pgid) final {
@@ -273,12 +280,6 @@ public:
   void clear_want_pg_temp() final {
     shard_services.remove_want_pg_temp(pgid.pgid);
   }
-  void publish_stats_to_osd() final {
-    // Not needed yet
-  }
-  void clear_publish_stats() final {
-    // Not needed yet
-  }
   void check_recovery_sources(const OSDMapRef& newmap) final {
     // Not needed yet
   }
@@ -321,7 +322,8 @@ public:
   void on_removal(ceph::os::Transaction &t) final {
     // TODO
   }
-  void do_delete_work(ceph::os::Transaction &t) final;
+  std::pair<ghobject_t, bool>
+  do_delete_work(ceph::os::Transaction &t, ghobject_t _next) final;
 
   // merge/split not ready
   void clear_ready_to_merge() final {}
@@ -355,6 +357,7 @@ public:
 
   bool try_reserve_recovery_space(
     int64_t primary_num_bytes, int64_t local_num_bytes) final {
+    // TODO
     return true;
   }
   void unreserve_recovery_space() final {}
@@ -439,14 +442,6 @@ public:
   bool is_backfilling() const final {
     return peering_state.is_backfilling();
   }
-  pg_stat_t get_stats() {
-    auto stats = peering_state.prepare_stats_for_publish(
-      false,
-      pg_stat_t(),
-      object_stat_collection_t());
-    ceph_assert(stats);
-    return *stats;
-  }
   bool get_need_up_thru() const {
     return peering_state.get_need_up_thru();
   }
@@ -470,7 +465,6 @@ public:
     int acting_primary,
     const pg_history_t& history,
     const PastIntervals& pim,
-    bool backfill,
     ceph::os::Transaction &t);
 
   seastar::future<> read_state(crimson::os::FuturizedStore* store);
@@ -482,7 +476,7 @@ public:
   void handle_activate_map(PeeringCtx &rctx);
   void handle_initialize(PeeringCtx &rctx);
 
-  static hobject_t get_oid(const MOSDOp &m);
+  static hobject_t get_oid(const hobject_t& hobj);
   static RWState::State get_lock_type(const OpInfo &op_info);
   static std::optional<hobject_t> resolve_oid(
     const SnapSet &snapset,
@@ -490,70 +484,127 @@ public:
 
   using load_obc_ertr = crimson::errorator<
     crimson::ct_error::object_corrupted>;
-  load_obc_ertr::future<
+  using load_obc_iertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      load_obc_ertr>;
+  using interruptor = ::crimson::interruptible::interruptor<
+    ::crimson::osd::IOInterruptCondition>;
+  load_obc_iertr::future<
     std::pair<crimson::osd::ObjectContextRef, bool>>
   get_or_load_clone_obc(
     hobject_t oid, crimson::osd::ObjectContextRef head_obc);
 
-  load_obc_ertr::future<
+  load_obc_iertr::future<
     std::pair<crimson::osd::ObjectContextRef, bool>>
   get_or_load_head_obc(hobject_t oid);
 
-  load_obc_ertr::future<crimson::osd::ObjectContextRef>
+  load_obc_iertr::future<crimson::osd::ObjectContextRef>
   load_head_obc(ObjectContextRef obc);
 
-  load_obc_ertr::future<ObjectContextRef> get_locked_obc(
-    Operation *op,
-    const hobject_t &oid,
-    RWState::State type);
-public:
-  template <typename F>
-  auto with_locked_obc(
-    Ref<MOSDOp> &m,
-    const OpInfo &op_info,
-    Operation *op,
-    F &&f) {
-    if (__builtin_expect(stopping, false)) {
-      throw crimson::common::system_shutdown_exception();
-    }
-    RWState::State type = get_lock_type(op_info);
-    return get_locked_obc(op, get_oid(*m), type)
-      .safe_then([f=std::forward<F>(f), type=type](auto obc) {
-	return f(obc).finally([obc, type=type] {
-	  obc->put_lock_type(type);
-	  return load_obc_ertr::now();
-	});
-      });
-  }
+  load_obc_iertr::future<>
+  reload_obc(crimson::osd::ObjectContext& obc) const;
 
-  seastar::future<> handle_rep_op(Ref<MOSDRepOp> m);
-  void handle_rep_op_reply(crimson::net::Connection* conn,
+public:
+  using with_obc_func_t =
+    std::function<load_obc_iertr::future<> (ObjectContextRef)>;
+
+  using obc_accessing_list_t = boost::intrusive::list<
+    ObjectContext,
+    ObjectContext::obc_accessing_option_t>;
+  obc_accessing_list_t obc_set_accessing;
+
+  template<RWState::State State>
+  load_obc_iertr::future<> with_head_obc(hobject_t oid, with_obc_func_t&& func);
+
+  template<RWState::State State>
+  interruptible_future<> with_locked_obc(
+    ObjectContextRef obc,
+    with_obc_func_t&& f);
+  load_obc_iertr::future<> with_locked_obc(
+    const hobject_t &hobj,
+    const OpInfo &op_info,
+    with_obc_func_t&& f);
+
+  interruptible_future<> handle_rep_op(Ref<MOSDRepOp> m);
+  void handle_rep_op_reply(crimson::net::ConnectionRef conn,
 			   const MOSDRepOpReply& m);
 
   void print(std::ostream& os) const;
   void dump_primary(Formatter*);
 
 private:
+  template<RWState::State State>
+  load_obc_iertr::future<> with_head_obc(
+    ObjectContextRef obc,
+    bool existed,
+    with_obc_func_t&& func);
+  template<RWState::State State>
+  interruptible_future<> with_existing_head_obc(
+    ObjectContextRef head,
+    with_obc_func_t&& func);
+
+  template<RWState::State State>
+  load_obc_iertr::future<> with_clone_obc(hobject_t oid, with_obc_func_t&& func);
+  template<RWState::State State>
+  interruptible_future<> with_existing_clone_obc(
+    ObjectContextRef clone, with_obc_func_t&& func);
+
+  load_obc_iertr::future<ObjectContextRef> get_locked_obc(
+    Operation *op,
+    const hobject_t &oid,
+    RWState::State type);
+
   void do_peering_event(
     const boost::statechart::event_base &evt,
     PeeringCtx &rctx);
-  seastar::future<Ref<MOSDOpReply>> do_osd_ops(
+  void fill_op_params_bump_pg_version(
+    osd_op_params_t& osd_op_p,
+    const bool user_modify);
+  using do_osd_ops_ertr = crimson::errorator<
+   crimson::ct_error::eagain>;
+  using do_osd_ops_iertr =
+    ::crimson::interruptible::interruptible_errorator<
+      ::crimson::osd::IOInterruptCondition,
+      ::crimson::errorator<crimson::ct_error::eagain>>;
+  template <typename Ret = void>
+  using pg_rep_op_fut_t =
+    std::tuple<interruptible_future<>,
+               do_osd_ops_iertr::future<Ret>>;
+  do_osd_ops_iertr::future<pg_rep_op_fut_t<Ref<MOSDOpReply>>> do_osd_ops(
     Ref<MOSDOp> m,
     ObjectContextRef obc,
     const OpInfo &op_info);
-  seastar::future<Ref<MOSDOpReply>> do_pg_ops(Ref<MOSDOp> m);
-  seastar::future<> do_osd_op(
-    ObjectState& os,
-    OSDOp& op,
-    ceph::os::Transaction& txn);
-  seastar::future<ceph::bufferlist> do_pgnls(ceph::bufferlist& indata,
-					     const std::string& nspace,
-					     uint64_t limit);
-  seastar::future<> submit_transaction(const OpInfo& op_info,
-				       const std::vector<OSDOp>& ops,
-				       ObjectContextRef&& obc,
-				       ceph::os::Transaction&& txn,
-				       const osd_op_params_t& oop);
+  using do_osd_ops_success_func_t =
+    std::function<do_osd_ops_iertr::future<>()>;
+  using do_osd_ops_failure_func_t =
+    std::function<do_osd_ops_iertr::future<>(const std::error_code&)>;
+  struct do_osd_ops_params_t;
+  do_osd_ops_iertr::future<pg_rep_op_fut_t<>> do_osd_ops(
+    ObjectContextRef obc,
+    std::vector<OSDOp>& ops,
+    const OpInfo &op_info,
+    const do_osd_ops_params_t& params,
+    do_osd_ops_success_func_t success_func,
+    do_osd_ops_failure_func_t failure_func);
+  template <class Ret, class SuccessFunc, class FailureFunc>
+  do_osd_ops_iertr::future<pg_rep_op_fut_t<Ret>> do_osd_ops_execute(
+    seastar::lw_shared_ptr<OpsExecuter> ox,
+    std::vector<OSDOp>& ops,
+    const OpInfo &op_info,
+    SuccessFunc&& success_func,
+    FailureFunc&& failure_func);
+  interruptible_future<Ref<MOSDOpReply>> do_pg_ops(Ref<MOSDOp> m);
+  std::tuple<interruptible_future<>, interruptible_future<>>
+  submit_transaction(
+    const OpInfo& op_info,
+    const std::vector<OSDOp>& ops,
+    ObjectContextRef&& obc,
+    ceph::os::Transaction&& txn,
+    osd_op_params_t&& oop);
+  interruptible_future<> repair_object(
+    const hobject_t& oid,
+    eversion_t& v);
 
 private:
   OSDMapGate osdmap_gate;
@@ -571,7 +622,6 @@ public:
     return shard_services;
   }
   seastar::future<> stop();
-
 private:
   std::unique_ptr<PGBackend> backend;
   std::unique_ptr<RecoveryBackend> recovery_backend;
@@ -579,6 +629,15 @@ private:
 
   PeeringState peering_state;
   eversion_t projected_last_update;
+
+public:
+  // PeeringListener
+  void publish_stats_to_osd() final;
+  void clear_publish_stats() final;
+  pg_stat_t get_stats() const;
+private:
+  std::optional<pg_stat_t> pg_stats;
+
 public:
   RecoveryBackend* get_recovery_backend() final {
     return recovery_backend.get();
@@ -602,6 +661,9 @@ public:
   const set<pg_shard_t> &get_acting_recovery_backfill() const {
     return peering_state.get_acting_recovery_backfill();
   }
+  bool is_backfill_target(pg_shard_t osd) const {
+    return peering_state.is_backfill_target(osd);
+  }
   void begin_peer_recover(pg_shard_t peer, const hobject_t oid) {
     peering_state.begin_peer_recover(peer, oid);
   }
@@ -615,6 +677,9 @@ public:
   const map<pg_shard_t, pg_missing_t> &get_shard_missing() const {
     return peering_state.get_peer_missing();
   }
+  epoch_t get_interval_start_epoch() const {
+    return get_info().history.same_interval_since;
+  }
   const pg_missing_const_i* get_shard_missing(pg_shard_t shard) const {
     if (shard == pg_whoami)
       return &get_local_missing();
@@ -626,6 +691,7 @@ public:
 	return &it->second;
     }
   }
+  interruptible_future<std::tuple<bool, int>> already_complete(const osd_reqid_t& reqid);
   int get_recovery_op_priority() const {
     int64_t pri = 0;
     get_pool().info.opts.get(pool_opts_t::RECOVERY_OP_PRIORITY, &pri);
@@ -662,11 +728,14 @@ private:
 
   friend std::ostream& operator<<(std::ostream&, const PG& pg);
   friend class ClientRequest;
+  friend struct CommonClientRequest;
   friend class PGAdvanceMap;
   friend class PeeringEvent;
   friend class RepRequest;
   friend class BackfillRecovery;
-  friend struct BackfillState::PGFacade;
+  friend struct PGFacade;
+  friend class InternalClientRequest;
+  friend class WatchTimeoutRequest;
 private:
   seastar::future<bool> find_unfound() {
     return seastar::make_ready_future<bool>(true);
@@ -684,12 +753,42 @@ private:
       !peering_state.get_missing_loc().readable_with_acting(
 	oid, get_actingset(), v);
   }
+  bool is_degraded_or_backfilling_object(const hobject_t& soid) const;
   const set<pg_shard_t> &get_actingset() const {
     return peering_state.get_actingset();
   }
 
 private:
   BackfillRecovery::BackfillRecoveryPipeline backfill_pipeline;
+
+  friend class IOInterruptCondition;
+};
+
+struct PG::do_osd_ops_params_t {
+  crimson::net::ConnectionRef get_connection() const {
+    return nullptr;
+  }
+  osd_reqid_t get_reqid() const {
+    return reqid;
+  }
+  utime_t get_mtime() const {
+    return mtime;
+  };
+  epoch_t get_map_epoch() const {
+    return map_epoch;
+  }
+  entity_inst_t get_orig_source_inst() const {
+    return orig_source_inst;
+  }
+  uint64_t get_features() const {
+    return features;
+  }
+  crimson::net::ConnectionRef conn;
+  osd_reqid_t reqid;
+  utime_t mtime;
+  epoch_t map_epoch;
+  entity_inst_t orig_source_inst;
+  uint64_t features;
 };
 
 std::ostream& operator<<(std::ostream&, const PG& pg);

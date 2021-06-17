@@ -59,6 +59,9 @@ class ShardServices : public md_config_obs_t {
   const char** get_tracked_conf_keys() const final;
   void handle_conf_change(const ConfigProxy& conf,
                           const std::set <std::string> &changed) final;
+  template<class MsgT>
+  seastar::future<> do_send_to_osd(int peer, MsgT m, epoch_t from_epoch);
+
 public:
   ShardServices(
     OSDMapService &osdmap_service,
@@ -72,6 +75,11 @@ public:
   seastar::future<> send_to_osd(
     int peer,
     MessageRef m,
+    epoch_t from_epoch);
+
+  seastar::future<> send_to_osd(
+    int peer,
+    MessageURef m,
     epoch_t from_epoch);
 
   crimson::os::FuturizedStore &get_store() {
@@ -88,7 +96,7 @@ public:
   }
 
   // Op Management
-  OperationRegistry registry;
+  OSDOperationRegistry registry;
   OperationThrottler throttler;
 
   template <typename T, typename... Args>
@@ -97,7 +105,13 @@ public:
       throw crimson::common::system_shutdown_exception();
     }
     auto op = registry.create_operation<T>(std::forward<Args>(args)...);
-    return std::make_pair(op, op->start());
+    auto fut = op->start().then([op /* by copy */] {
+      // ensure the op's lifetime is appropriate. It is not enough to
+      // guarantee it's alive at the scheduling stages (i.e. `then()`
+      // calling) but also during the actual execution (i.e. when passed
+      // lambdas are actually run).
+    });
+    return std::make_pair(std::move(op), std::move(fut));
   }
 
   seastar::future<> stop() {
@@ -142,7 +156,6 @@ private:
   };
   map<pg_t, pg_temp_t> pg_temp_wanted;
   map<pg_t, pg_temp_t> pg_temp_pending;
-  void _sent_pg_temp();
   friend std::ostream& operator<<(std::ostream&, const pg_temp_t&);
 public:
   void queue_want_pg_temp(pg_t pgid, const vector<int>& want,

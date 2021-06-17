@@ -1,8 +1,8 @@
-@use './src/styles/defaults/bootstrap-defaults' as bd;
+@use './src/styles/vendor/variables' as vv;
 
 /* Basics */
 html {
-  background-color: bd.$body-bg;
+  background-color: vv.$body-bg;
 }
 
 html,
@@ -35,7 +35,7 @@ option {
   justify-content: center;
 }
 
-.loading {
+.loading:not(cd-api-docs *) {
   left: 50%;
   position: absolute;
   top: 50%;
@@ -72,4 +72,28 @@ option {
 
 .text-pre {
   white-space: pre;
+}
+
+.icon-danger-color {
+  color: vv.$danger;
+}
+
+.icon-warning-color {
+  color: vv.$warning;
+}
+
+.border-warning {
+  border-left: 4px solid vv.$warning;
+}
+
+.border-danger {
+  border-left: 4px solid vv.$danger;
+}
+
+.border-info {
+  border-left: 4px solid vv.$info;
+}
+
+.border-success {
+  border-left: 4px solid vv.$success;
 }

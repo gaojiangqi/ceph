@@ -18,9 +18,10 @@
 #include "common/escape.h"
 #include "include/buffer.h"
 
+#include <fmt/format.h>
+#include <algorithm>
 #include <set>
 #include <limits>
-#include <boost/format.hpp>
 
 // -----------------------
 namespace ceph {
@@ -690,11 +691,8 @@ void TableFormatter::flush(std::ostream& os)
           os << "|";
 
           for (size_t j = 0; j < m_vec[i].size(); j++) {
-            os << " ";
-            std::stringstream fs;
-            fs << boost::format("%%-%is") % (m_column_size[j] + 2);
-            os << boost::format(fs.str()) % m_vec[i][j].first;
-            os << "|";
+            os << fmt::format(" {:<{}}|",
+                              m_vec[i][j].first, m_column_size[j] + 2);
           }
           os << "\n";
           os << "+";
@@ -713,8 +711,6 @@ void TableFormatter::flush(std::ostream& os)
     for (size_t j = 0; j < m_vec[i].size(); j++) {
       if (!m_keyval)
         os << " ";
-      std::stringstream fs;
-
       if (m_keyval) {
         os << "key::";
         os << m_vec[i][j].first;
@@ -723,9 +719,7 @@ void TableFormatter::flush(std::ostream& os)
         os << m_vec[i][j].second;
         os << "\" ";
       } else {
-        fs << boost::format("%%-%is") % (m_column_size[j] + 2);
-        os << boost::format(fs.str()) % m_vec[i][j].second;
-        os << "|";
+        os << fmt::format("{:<{}}|", m_vec[i][j].second, m_column_size[j] + 2);
       }
     }
 

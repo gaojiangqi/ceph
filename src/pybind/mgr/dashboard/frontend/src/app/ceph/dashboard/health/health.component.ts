@@ -3,19 +3,19 @@ import { Component, OnDestroy, OnInit } from '@angular/core';
 import _ from 'lodash';
 import { Subscription } from 'rxjs';
 
-import styles from '../../../../styles.scss';
-import { HealthService } from '../../../shared/api/health.service';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { Permissions } from '../../../shared/models/permissions';
-import { DimlessBinaryPipe } from '../../../shared/pipes/dimless-binary.pipe';
-import { DimlessPipe } from '../../../shared/pipes/dimless.pipe';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
+import { PgCategoryService } from '~/app/ceph/shared/pg-category.service';
+import { HealthService } from '~/app/shared/api/health.service';
+import { CssHelper } from '~/app/shared/classes/css-helper';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { Permissions } from '~/app/shared/models/permissions';
+import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
+import { DimlessPipe } from '~/app/shared/pipes/dimless.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import {
   FeatureTogglesMap$,
   FeatureTogglesService
-} from '../../../shared/services/feature-toggles.service';
-import { RefreshIntervalService } from '../../../shared/services/refresh-interval.service';
-import { PgCategoryService } from '../../shared/pg-category.service';
+} from '~/app/shared/services/feature-toggles.service';
+import { RefreshIntervalService } from '~/app/shared/services/refresh-interval.service';
 
 @Component({
   selector: 'cd-health',
@@ -32,7 +32,10 @@ export class HealthComponent implements OnInit, OnDestroy {
   clientStatsConfig = {
     colors: [
       {
-        backgroundColor: [styles.chartHealthColorCyan, styles.chartHealthColorPurple]
+        backgroundColor: [
+          this.cssHelper.propertyValue('chart-color-cyan'),
+          this.cssHelper.propertyValue('chart-color-purple')
+        ]
       }
     ]
   };
@@ -40,7 +43,10 @@ export class HealthComponent implements OnInit, OnDestroy {
   rawCapacityChartConfig = {
     colors: [
       {
-        backgroundColor: [styles.chartHealthColorBlue, styles.chartHealthColorGray]
+        backgroundColor: [
+          this.cssHelper.propertyValue('chart-color-blue'),
+          this.cssHelper.propertyValue('chart-color-gray')
+        ]
       }
     ]
   };
@@ -58,7 +64,8 @@ export class HealthComponent implements OnInit, OnDestroy {
     private featureToggles: FeatureTogglesService,
     private refreshIntervalService: RefreshIntervalService,
     private dimlessBinary: DimlessBinaryPipe,
-    private dimless: DimlessPipe
+    private dimless: DimlessPipe,
+    private cssHelper: CssHelper
   ) {
     this.permissions = this.authStorageService.getPermissions();
     this.enabledFeature$ = this.featureToggles.get();
@@ -92,7 +99,7 @@ export class HealthComponent implements OnInit, OnDestroy {
         this.healthData.client_perf.read_op_per_sec
       )} ${$localize`/s`}`
     );
-    ratioData.push(this.healthData.client_perf.read_op_per_sec);
+    ratioData.push(this.calcPercentage(this.healthData.client_perf.read_op_per_sec, total));
     ratioLabels.push(
       `${$localize`Writes`}: ${this.dimless.transform(
         this.healthData.client_perf.write_op_per_sec

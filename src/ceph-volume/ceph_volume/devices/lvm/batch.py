@@ -53,7 +53,7 @@ def get_physical_osds(devices, args):
     data_slots = args.osds_per_device
     if args.data_slots:
         data_slots = max(args.data_slots, args.osds_per_device)
-    rel_data_size = 1.0 / data_slots
+    rel_data_size = args.data_allocate_fraction / data_slots
     mlogger.debug('relative data size: {}'.format(rel_data_size))
     ret = []
     for dev in devices:
@@ -102,11 +102,11 @@ def get_physical_fast_allocs(devices, type_, fast_slots_per_device, new_osds, ar
     requested_slots = getattr(args, '{}_slots'.format(type_))
     if not requested_slots or requested_slots < fast_slots_per_device:
         if requested_slots:
-            mlogger.info('{}_slots argument is to small, ignoring'.format(type_))
+            mlogger.info('{}_slots argument is too small, ignoring'.format(type_))
         requested_slots = fast_slots_per_device
 
     requested_size = getattr(args, '{}_size'.format(type_), 0)
-    if requested_size == 0:
+    if not requested_size or requested_size == 0:
         # no size argument was specified, check ceph.conf
         get_size_fct = getattr(prepare, 'get_{}_size'.format(type_))
         requested_size = get_size_fct(lv_format=False)
@@ -126,6 +126,7 @@ def get_physical_fast_allocs(devices, type_, fast_slots_per_device, new_osds, ar
         if requested_size:
             if requested_size <= abs_size:
                 abs_size = requested_size
+                relative_size = int(abs_size) / dev_size
             else:
                 mlogger.error(
                     '{} was requested for {}, but only {} can be fulfilled'.format(
@@ -175,28 +176,28 @@ class Batch(object):
             'devices',
             metavar='DEVICES',
             nargs='*',
-            type=arg_validators.ValidDevice(),
+            type=arg_validators.ValidBatchDevice(),
             default=[],
             help='Devices to provision OSDs',
         )
         parser.add_argument(
             '--db-devices',
             nargs='*',
-            type=arg_validators.ValidDevice(),
+            type=arg_validators.ValidBatchDevice(),
             default=[],
             help='Devices to provision OSDs db volumes',
         )
         parser.add_argument(
             '--wal-devices',
             nargs='*',
-            type=arg_validators.ValidDevice(),
+            type=arg_validators.ValidBatchDevice(),
             default=[],
             help='Devices to provision OSDs wal volumes',
         )
         parser.add_argument(
             '--journal-devices',
             nargs='*',
-            type=arg_validators.ValidDevice(),
+            type=arg_validators.ValidBatchDevice(),
             default=[],
             help='Devices to provision OSDs journal volumes',
         )
@@ -268,6 +269,12 @@ class Batch(object):
             help=('Provision more than 1 (the default) OSD slot per device'
                   ' if more slots then osds-per-device are specified, slots'
                   'will stay unoccupied'),
+        )
+        parser.add_argument(
+            '--data-allocate-fraction',
+            type=arg_validators.ValidFraction(),
+            help='Fraction to allocate from data device (0,1.0]',
+            default=1.0
         )
         parser.add_argument(
             '--block-db-size',
@@ -369,6 +376,9 @@ class Batch(object):
         ssd = []
         for d in self.args.devices:
             rotating.append(d) if d.rotational else ssd.append(d)
+        if ssd and not rotating:
+            # no need for additional sorting, we'll only deploy standalone on ssds
+            return
         self.args.devices = rotating
         if self.args.filestore:
             self.args.journal_devices = ssd

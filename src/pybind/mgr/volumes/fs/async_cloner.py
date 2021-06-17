@@ -6,6 +6,7 @@ import logging
 from contextlib import contextmanager
 
 import cephfs
+from mgr_util import lock_timeout_log
 
 from .async_job import AsyncJobs
 from .exception import IndexException, MetadataMgrException, OpSmException, VolumeException
@@ -43,13 +44,13 @@ def get_next_clone_entry(volume_client, volname, running_jobs):
 def open_at_volume(volume_client, volname, groupname, subvolname, op_type):
     with open_volume(volume_client, volname) as fs_handle:
         with open_group(fs_handle, volume_client.volspec, groupname) as group:
-            with open_subvol(fs_handle, volume_client.volspec, group, subvolname, op_type) as subvolume:
+            with open_subvol(volume_client.mgr, fs_handle, volume_client.volspec, group, subvolname, op_type) as subvolume:
                 yield subvolume
 
 @contextmanager
 def open_at_group(volume_client, fs_handle, groupname, subvolname, op_type):
     with open_group(fs_handle, volume_client.volspec, groupname) as group:
-        with open_subvol(fs_handle, volume_client.volspec, group, subvolname, op_type) as subvolume:
+        with open_subvol(volume_client.mgr, fs_handle, volume_client.volspec, group, subvolname, op_type) as subvolume:
             yield subvolume
 
 @contextmanager
@@ -117,6 +118,7 @@ def sync_attrs(fs_handle, target_path, source_statx):
         fs_handle.lchown(target_path, source_statx["uid"], source_statx["gid"])
         fs_handle.lutimes(target_path, (time.mktime(source_statx["atime"].timetuple()),
                                         time.mktime(source_statx["mtime"].timetuple())))
+        fs_handle.lchmod(target_path, source_statx["mode"])
     except cephfs.Error as e:
         log.warning("error synchronizing attrs for {0} ({1})".format(target_path, e))
         raise e
@@ -222,12 +224,15 @@ def handle_clone_complete(volume_client, volname, index, groupname, subvolname, 
         log.error("failed to detach clone from snapshot: {0}".format(e))
     return (None, True)
 
-def start_clone_sm(volume_client, volname, index, groupname, subvolname, state_table, should_cancel):
+def start_clone_sm(volume_client, volname, index, groupname, subvolname, state_table, should_cancel, snapshot_clone_delay):
     finished = False
     current_state = None
     try:
         current_state = get_clone_state(volume_client, volname, groupname, subvolname)
         log.debug("cloning ({0}, {1}, {2}) -- starting state \"{3}\"".format(volname, groupname, subvolname, current_state))
+        if current_state == SubvolumeStates.STATE_PENDING:
+            time.sleep(snapshot_clone_delay)
+            log.info("Delayed cloning ({0}, {1}, {2}) -- by {3} seconds".format(volname, groupname, subvolname, snapshot_clone_delay))
         while not finished:
             handler = state_table.get(current_state, None)
             if not handler:
@@ -242,7 +247,7 @@ def start_clone_sm(volume_client, volname, index, groupname, subvolname, state_t
         log.error("clone failed for ({0}, {1}, {2}) (current_state: {3}, reason: {4})".format(volname, groupname,\
                                                                                              subvolname, current_state, ve))
 
-def clone(volume_client, volname, index, clone_path, state_table, should_cancel):
+def clone(volume_client, volname, index, clone_path, state_table, should_cancel, snapshot_clone_delay):
     log.info("cloning to subvolume path: {0}".format(clone_path))
     resolved = resolve(volume_client.volspec, clone_path)
 
@@ -252,7 +257,7 @@ def clone(volume_client, volname, index, clone_path, state_table, should_cancel)
 
     try:
         log.info("starting clone: ({0}, {1}, {2})".format(volname, groupname, subvolname))
-        start_clone_sm(volume_client, volname, index, groupname, subvolname, state_table, should_cancel)
+        start_clone_sm(volume_client, volname, index, groupname, subvolname, state_table, should_cancel, snapshot_clone_delay)
         log.info("finished clone: ({0}, {1}, {2})".format(volname, groupname, subvolname))
     except VolumeException as ve:
         log.error("clone failed for ({0}, {1}, {2}), reason: {3}".format(volname, groupname, subvolname, ve))
@@ -263,8 +268,9 @@ class Cloner(AsyncJobs):
     this relies on a simple state machine (which mimics states from SubvolumeOpSm class) as
     the driver. file types supported are directories, symbolic links and regular files.
     """
-    def __init__(self, volume_client, tp_size):
+    def __init__(self, volume_client, tp_size, snapshot_clone_delay):
         self.vc = volume_client
+        self.snapshot_clone_delay = snapshot_clone_delay
         self.state_table = {
             SubvolumeStates.STATE_PENDING      : handle_clone_pending,
             SubvolumeStates.STATE_INPROGRESS   : handle_clone_in_progress,
@@ -275,7 +281,10 @@ class Cloner(AsyncJobs):
         super(Cloner, self).__init__(volume_client, "cloner", tp_size)
 
     def reconfigure_max_concurrent_clones(self, tp_size):
-        super(Cloner, self).reconfigure_max_concurrent_clones("cloner", tp_size)
+        return super(Cloner, self).reconfigure_max_async_threads(tp_size)
+
+    def reconfigure_snapshot_clone_delay(self, timeout):
+        self.snapshot_clone_delay = timeout
 
     def is_clone_cancelable(self, clone_state):
         return not (SubvolumeOpSm.is_complete_state(clone_state) or SubvolumeOpSm.is_failed_state(clone_state))
@@ -311,7 +320,7 @@ class Cloner(AsyncJobs):
         try:
             with open_volume(self.vc, volname) as fs_handle:
                 with open_group(fs_handle, self.vc.volspec, groupname) as group:
-                    with open_subvol(fs_handle, self.vc.volspec, group, clonename, SubvolumeOpType.CLONE_CANCEL) as clone_subvolume:
+                    with open_subvol(self.vc.mgr, fs_handle, self.vc.volspec, group, clonename, SubvolumeOpType.CLONE_CANCEL) as clone_subvolume:
                         status = clone_subvolume.status
                         clone_state = SubvolumeStates.from_value(status['state'])
                         if not self.is_clone_cancelable(clone_state):
@@ -328,10 +337,10 @@ class Cloner(AsyncJobs):
             # to persist the new state, async cloner accesses the volume in exclusive mode.
             # accessing the volume in exclusive mode here would lead to deadlock.
             assert track_idx is not None
-            with self.lock:
+            with lock_timeout_log(self.lock):
                 with open_volume_lockless(self.vc, volname) as fs_handle:
                     with open_group(fs_handle, self.vc.volspec, groupname) as group:
-                        with open_subvol(fs_handle, self.vc.volspec, group, clonename, SubvolumeOpType.CLONE_CANCEL) as clone_subvolume:
+                        with open_subvol(self.vc.mgr, fs_handle, self.vc.volspec, group, clonename, SubvolumeOpType.CLONE_CANCEL) as clone_subvolume:
                             if not self._cancel_job(volname, (track_idx, clone_subvolume.base_path)):
                                 raise VolumeException(-errno.EINVAL, "cannot cancel -- clone finished (check clone status)")
         except (IndexException, MetadataMgrException) as e:
@@ -342,4 +351,4 @@ class Cloner(AsyncJobs):
         return get_next_clone_entry(self.vc, volname, running_jobs)
 
     def execute_job(self, volname, job, should_cancel):
-        clone(self.vc, volname, job[0].decode('utf-8'), job[1].decode('utf-8'), self.state_table, should_cancel)
+        clone(self.vc, volname, job[0].decode('utf-8'), job[1].decode('utf-8'), self.state_table, should_cancel, self.snapshot_clone_delay)

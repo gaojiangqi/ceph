@@ -1,28 +1,29 @@
 import { Component, Input, OnChanges, OnInit, ViewChild } from '@angular/core';
 
-import { delay, finalize } from 'rxjs/operators';
+import { delay } from 'rxjs/operators';
 
-import { CephServiceService } from '../../../shared/api/ceph-service.service';
-import { OrchestratorService } from '../../../shared/api/orchestrator.service';
-import { ListWithDetails } from '../../../shared/classes/list-with-details.class';
-import { CriticalConfirmationModalComponent } from '../../../shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
-import { ActionLabelsI18n, URLVerbs } from '../../../shared/constants/app.constants';
-import { TableComponent } from '../../../shared/datatable/table/table.component';
-import { CellTemplate } from '../../../shared/enum/cell-template.enum';
-import { Icons } from '../../../shared/enum/icons.enum';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableColumn } from '../../../shared/models/cd-table-column';
-import { CdTableFetchDataContext } from '../../../shared/models/cd-table-fetch-data-context';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { OrchestratorFeature } from '../../../shared/models/orchestrator.enum';
-import { OrchestratorStatus } from '../../../shared/models/orchestrator.interface';
-import { Permissions } from '../../../shared/models/permissions';
-import { CephServiceSpec } from '../../../shared/models/service.interface';
-import { AuthStorageService } from '../../../shared/services/auth-storage.service';
-import { ModalService } from '../../../shared/services/modal.service';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
-import { URLBuilderService } from '../../../shared/services/url-builder.service';
+import { CephServiceService } from '~/app/shared/api/ceph-service.service';
+import { OrchestratorService } from '~/app/shared/api/orchestrator.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
+import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
+import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
+import { TableComponent } from '~/app/shared/datatable/table/table.component';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableColumn } from '~/app/shared/models/cd-table-column';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { OrchestratorFeature } from '~/app/shared/models/orchestrator.enum';
+import { OrchestratorStatus } from '~/app/shared/models/orchestrator.interface';
+import { Permissions } from '~/app/shared/models/permissions';
+import { CephServiceSpec } from '~/app/shared/models/service.interface';
+import { RelativeDatePipe } from '~/app/shared/pipes/relative-date.pipe';
+import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
+import { URLBuilderService } from '~/app/shared/services/url-builder.service';
+import { PlacementPipe } from './placement.pipe';
 
 const BASE_URL = 'services';
 
@@ -43,6 +44,7 @@ export class ServicesComponent extends ListWithDetails implements OnChanges, OnI
 
   permissions: Permissions;
   tableActions: CdTableAction[];
+  showDocPanel = false;
 
   orchStatus: OrchestratorStatus;
   actionOrchFeatures = {
@@ -61,6 +63,7 @@ export class ServicesComponent extends ListWithDetails implements OnChanges, OnI
     private modalService: ModalService,
     private orchService: OrchestratorService,
     private cephServiceService: CephServiceService,
+    private relativeDatePipe: RelativeDatePipe,
     private taskWrapperService: TaskWrapperService,
     private urlBuilder: URLBuilderService
   ) {
@@ -93,18 +96,10 @@ export class ServicesComponent extends ListWithDetails implements OnChanges, OnI
         flexGrow: 1
       },
       {
-        name: $localize`Container image name`,
-        prop: 'status.container_image_name',
-        flexGrow: 3
-      },
-      {
-        name: $localize`Container image ID`,
-        prop: 'status.container_image_id',
-        flexGrow: 3,
-        cellTransformation: CellTemplate.truncate,
-        customTemplateConfig: {
-          length: 12
-        }
+        name: $localize`Placement`,
+        prop: '',
+        pipe: new PlacementPipe(),
+        flexGrow: 2
       },
       {
         name: $localize`Running`,
@@ -119,6 +114,7 @@ export class ServicesComponent extends ListWithDetails implements OnChanges, OnI
       {
         name: $localize`Last Refreshed`,
         prop: 'status.last_refresh',
+        pipe: this.relativeDatePipe,
         flexGrow: 1
       }
     ];
@@ -129,6 +125,7 @@ export class ServicesComponent extends ListWithDetails implements OnChanges, OnI
 
     this.orchService.status().subscribe((status: OrchestratorStatus) => {
       this.orchStatus = status;
+      this.showDocPanel = !status.available;
     });
   }
 
@@ -189,15 +186,10 @@ export class ServicesComponent extends ListWithDetails implements OnChanges, OnI
           })
           .pipe(
             // Delay closing the dialog, otherwise the datatable still
-            // shows the deleted service after forcing a reload.
+            // shows the deleted service after an auto-reload.
             // Showing the dialog while delaying is done to increase
             // the user experience.
-            delay(2000),
-            finalize(() => {
-              // Force reloading the data table content because it is
-              // auto-reloaded only every 60s.
-              this.table.refreshBtn();
-            })
+            delay(5000)
           )
     });
   }

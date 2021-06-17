@@ -99,8 +99,10 @@ public:
                                MockImageDispatch &mock_image_dispatch,
                                bool init_shutdown, int r) {
     expect_test_features(mock_image_ctx, RBD_FEATURE_EXCLUSIVE_LOCK, true);
-    expect_test_features(mock_image_ctx, RBD_FEATURE_JOURNALING,
-                         ((mock_image_ctx.features & RBD_FEATURE_JOURNALING) != 0));
+    if (!mock_image_ctx.clone_copy_on_read) {
+      expect_test_features(mock_image_ctx, RBD_FEATURE_JOURNALING,
+                           ((mock_image_ctx.features & RBD_FEATURE_JOURNALING) != 0));
+    }
     if (mock_image_ctx.clone_copy_on_read ||
         (mock_image_ctx.features & RBD_FEATURE_JOURNALING) != 0) {
       expect_set_require_lock(mock_image_dispatch, init_shutdown,
@@ -133,16 +135,14 @@ public:
                   .WillOnce(CompleteContext(0, mock_image_ctx.image_ctx->op_work_queue));
   }
 
-  void expect_close_image_cache(MockTestImageCtx &mock_image_ctx, int r) {
-    EXPECT_CALL(*mock_image_ctx.io_image_dispatcher,
-                shut_down_dispatch(io::IMAGE_DISPATCH_LAYER_WRITEBACK_CACHE, _))
-      .WillOnce(WithArg<1>(
-        CompleteContext(0, mock_image_ctx.image_ctx->op_work_queue)));
+  void expect_prerelease_exclusive_lock(MockTestImageCtx &mock_image_ctx, int r) {
+    EXPECT_CALL(*mock_image_ctx.plugin_registry, prerelease_exclusive_lock(_))
+                  .WillOnce(CompleteContext(r, mock_image_ctx.image_ctx->op_work_queue));
   }
 
   void expect_invalidate_cache(MockTestImageCtx &mock_image_ctx,
                                int r) {
-    EXPECT_CALL(*mock_image_ctx.io_object_dispatcher, invalidate_cache(_))
+    EXPECT_CALL(*mock_image_ctx.io_image_dispatcher, invalidate_cache(_))
       .WillOnce(CompleteContext(r, mock_image_ctx.image_ctx->op_work_queue));
   }
 
@@ -202,7 +202,7 @@ TEST_F(TestMockExclusiveLockPreReleaseRequest, Success) {
 
   expect_prepare_lock(mock_image_ctx);
 
-  expect_close_image_cache(mock_image_ctx, 0);
+  expect_prerelease_exclusive_lock(mock_image_ctx, 0);
 
   expect_invalidate_cache(mock_image_ctx, 0);
 
@@ -243,7 +243,7 @@ TEST_F(TestMockExclusiveLockPreReleaseRequest, SuccessJournalDisabled) {
   expect_cancel_op_requests(mock_image_ctx, 0);
   expect_prepare_lock(mock_image_ctx);
 
-  expect_close_image_cache(mock_image_ctx, 0);
+  expect_prerelease_exclusive_lock(mock_image_ctx, 0);
 
   expect_invalidate_cache(mock_image_ctx, 0);
 
@@ -279,7 +279,7 @@ TEST_F(TestMockExclusiveLockPreReleaseRequest, SuccessObjectMapDisabled) {
   InSequence seq;
   expect_cancel_op_requests(mock_image_ctx, 0);
 
-  expect_close_image_cache(mock_image_ctx, 0);
+  expect_prerelease_exclusive_lock(mock_image_ctx, 0);
 
   expect_invalidate_cache(mock_image_ctx, 0);
 
@@ -311,7 +311,7 @@ TEST_F(TestMockExclusiveLockPreReleaseRequest, Blocklisted) {
                           -EBLOCKLISTED);
   expect_prepare_lock(mock_image_ctx);
 
-  expect_close_image_cache(mock_image_ctx, 0);
+  expect_prerelease_exclusive_lock(mock_image_ctx, 0);
 
   expect_invalidate_cache(mock_image_ctx, -EBLOCKLISTED);
 
@@ -354,7 +354,7 @@ TEST_F(TestMockExclusiveLockPreReleaseRequest, Disabled) {
 
   expect_prepare_lock(mock_image_ctx);
 
-  expect_close_image_cache(mock_image_ctx, 0);
+  expect_prerelease_exclusive_lock(mock_image_ctx, 0);
 
   expect_invalidate_cache(mock_image_ctx, 0);
 

@@ -8,6 +8,7 @@
 #include "test/librbd/mock/cache/MockImageCache.h"
 #include "librbd/io/ImageRequest.h"
 #include "librbd/io/ObjectDispatchSpec.h"
+#include "librbd/io/Utils.h"
 
 namespace librbd {
 namespace {
@@ -52,6 +53,27 @@ inline ImageCtx *get_image_ctx(MockTestImageCtx *image_ctx) {
 
 namespace librbd {
 namespace io {
+
+namespace util {
+
+template<>
+void file_to_extents(
+        MockTestImageCtx *image_ctx, uint64_t offset, uint64_t length,
+        uint64_t buffer_offset,
+        striper::LightweightObjectExtents *object_extents) {
+  Striper::file_to_extents(image_ctx->cct, &image_ctx->layout, offset, length,
+                           0, buffer_offset, object_extents);
+}
+
+template <> void extent_to_file(
+        MockTestImageCtx* image_ctx, uint64_t object_no, uint64_t offset,
+        uint64_t length,
+        std::vector<std::pair<uint64_t, uint64_t> >& extents) {
+  Striper::extent_to_file(image_ctx->cct, &image_ctx->layout, object_no,
+                          offset, length, extents);
+}
+
+} // namespace util
 
 using ::testing::_;
 using ::testing::InSequence;
@@ -502,15 +524,15 @@ TEST_F(TestMockIoImageRequest, ListSnaps) {
 
   SnapshotDelta object_snapshot_delta;
   object_snapshot_delta[{5,6}].insert(
-    0, 1024, {SNAPSHOT_EXTENT_STATE_DATA, 1024});
+    0, 1024, {SPARSE_EXTENT_STATE_DATA, 1024});
   object_snapshot_delta[{5,5}].insert(
-    4096, 4096, {SNAPSHOT_EXTENT_STATE_ZEROED, 4096});
+    4096, 4096, {SPARSE_EXTENT_STATE_ZEROED, 4096});
   expect_object_list_snaps_request(mock_image_ctx, 0, object_snapshot_delta, 0);
   object_snapshot_delta = {};
   object_snapshot_delta[{5,6}].insert(
-    1024, 3072, {SNAPSHOT_EXTENT_STATE_DATA, 3072});
+    1024, 3072, {SPARSE_EXTENT_STATE_DATA, 3072});
   object_snapshot_delta[{5,5}].insert(
-    2048, 2048, {SNAPSHOT_EXTENT_STATE_ZEROED, 2048});
+    2048, 2048, {SPARSE_EXTENT_STATE_ZEROED, 2048});
   expect_object_list_snaps_request(mock_image_ctx, 1, object_snapshot_delta, 0);
 
   SnapshotDelta snapshot_delta;
@@ -528,11 +550,11 @@ TEST_F(TestMockIoImageRequest, ListSnaps) {
 
   SnapshotDelta expected_snapshot_delta;
   expected_snapshot_delta[{5,6}].insert(
-    0, 1024, {SNAPSHOT_EXTENT_STATE_DATA, 1024});
+    0, 1024, {SPARSE_EXTENT_STATE_DATA, 1024});
   expected_snapshot_delta[{5,6}].insert(
-    5120, 3072, {SNAPSHOT_EXTENT_STATE_DATA, 3072});
+    5120, 3072, {SPARSE_EXTENT_STATE_DATA, 3072});
   expected_snapshot_delta[{5,5}].insert(
-    6144, 6144, {SNAPSHOT_EXTENT_STATE_ZEROED, 6144});
+    6144, 6144, {SPARSE_EXTENT_STATE_ZEROED, 6144});
   ASSERT_EQ(expected_snapshot_delta, snapshot_delta);
 }
 

@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 #include "common/ceph_context.h"
 #include "rgw/rgw_common.h"
+#include "rgw/rgw_auth.h"
 #include "rgw/rgw_process.h"
 #include "rgw/rgw_sal_rados.h"
 #include "rgw/rgw_lua_request.h"
 
 using namespace rgw;
+using boost::container::flat_set;
+using rgw::auth::Identity;
+using rgw::auth::Principal;
 
 class CctCleaner {
   CephContext* cct;
@@ -20,21 +24,98 @@ public:
   }
 };
 
-class TestRGWUser : public sal::RGWUser {
+class FakeIdentity : public Identity {
 public:
-  virtual int list_buckets(const string&, const string&, uint64_t, bool, sal::RGWBucketList&) override {
+  FakeIdentity() = default;
+
+  uint32_t get_perms_from_aclspec(const DoutPrefixProvider* dpp, const aclspec_t& aclspec) const override {
+    return 0;
+  };
+
+  bool is_admin_of(const rgw_user& uid) const override {
+    return false;
+  }
+
+  bool is_owner_of(const rgw_user& uid) const override {
+    return false;
+  }
+
+  virtual uint32_t get_perm_mask() const override {
     return 0;
   }
 
-  virtual sal::RGWBucket* create_bucket(rgw_bucket& bucket, ceph::real_time creation_time) override {
+  uint32_t get_identity_type() const override {
+    return TYPE_RGW;
+  }
+
+  string get_acct_name() const override {
+    return "";
+  }
+
+  string get_subuser() const override {
+    return "";
+  }
+
+  void to_str(std::ostream& out) const override {
+    return;
+  }
+
+  bool is_identity(const flat_set<Principal>& ids) const override {
+    return false;
+  }
+};
+
+class TestUser : public sal::User {
+public:
+  virtual std::unique_ptr<User> clone() override {
+    return std::unique_ptr<User>(new TestUser(*this));
+  }
+
+  virtual int list_buckets(const DoutPrefixProvider *dpp, const string&, const string&, uint64_t, bool, sal::BucketList&, optional_yield y) override {
+    return 0;
+  }
+
+  virtual sal::Bucket* create_bucket(rgw_bucket& bucket, ceph::real_time creation_time) override {
     return nullptr;
   }
 
-  virtual int load_by_id(optional_yield y) override {
+  virtual int read_attrs(const DoutPrefixProvider *dpp, optional_yield y) override {
     return 0;
   }
 
-  virtual ~TestRGWUser() = default;
+  virtual int read_stats(const DoutPrefixProvider *dpp, optional_yield y, RGWStorageStats* stats, ceph::real_time *last_stats_sync, ceph::real_time *last_stats_update) override {
+    return 0;
+  }
+
+  virtual int read_stats_async(const DoutPrefixProvider *dpp, RGWGetUserStats_CB *cb) override {
+    return 0;
+  }
+
+  virtual int complete_flush_stats(const DoutPrefixProvider *dpp, optional_yield y) override {
+    return 0;
+  }
+
+  virtual int read_usage(const DoutPrefixProvider *dpp, uint64_t start_epoch, uint64_t end_epoch, uint32_t max_entries, bool *is_truncated, RGWUsageIter& usage_iter, map<rgw_user_bucket, rgw_usage_log_entry>& usage) override {
+    return 0;
+  }
+
+  virtual int trim_usage(const DoutPrefixProvider *dpp, uint64_t start_epoch, uint64_t end_epoch) override {
+    return 0;
+  }
+
+  virtual int load_user(const DoutPrefixProvider *dpp, optional_yield y) override {
+    return 0;
+  }
+
+  virtual int store_user(const DoutPrefixProvider* dpp, optional_yield y, bool exclusive, RGWUserInfo* old_info) override {
+    return 0;
+  }
+
+  virtual int remove_user(const DoutPrefixProvider* dpp, optional_yield y) override {
+    return 0;
+  }
+
+  virtual ~TestUser() = default;
 };
 
 class TestAccounter : public io::Accounter, public io::BasicClient {
@@ -111,12 +192,35 @@ TEST(TestRGWLua, Hello)
   ASSERT_EQ(rc, 0);
 }
 
+TEST(TestRGWLua, RGWDebugLogNumber)
+{
+  const std::string script = R"(
+    RGWDebugLog(1234567890)
+  )";
+
+  DEFINE_REQ_STATE;
+
+  const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "", script);
+  ASSERT_EQ(rc, 0);
+}
+
+TEST(TestRGWLua, RGWDebugNil)
+{
+  const std::string script = R"(
+    RGWDebugLog(nil)
+  )";
+
+  DEFINE_REQ_STATE;
+
+  const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "", script);
+  ASSERT_EQ(rc, -1);
+}
+
 TEST(TestRGWLua, URI)
 {
   const std::string script = R"(
-    msg = "URI is: " .. Request.DecodedURI
-    RGWDebugLog(msg)
-    print(msg)
+    RGWDebugLog(Request.DecodedURI)
+    assert(Request.DecodedURI == "http://hello.world/")
   )";
 
   DEFINE_REQ_STATE;
@@ -129,10 +233,10 @@ TEST(TestRGWLua, URI)
 TEST(TestRGWLua, Response)
 {
   const std::string script = R"(
-    print(Request.Response.Message)
-    print(Request.Response.HTTPStatus)
-    print(Request.Response.RGWCode)
-    print(Request.Response.HTTPStatusCode)
+    assert(Request.Response.Message == "This is a bad request")
+    assert(Request.Response.HTTPStatus == "Bad Request")
+    assert(Request.Response.RGWCode == 4000)
+    assert(Request.Response.HTTPStatusCode == 400)
   )";
 
   DEFINE_REQ_STATE;
@@ -148,9 +252,9 @@ TEST(TestRGWLua, Response)
 TEST(TestRGWLua, SetResponse)
 {
   const std::string script = R"(
-    print(Request.Response.Message)
+    assert(Request.Response.Message == "this is a bad request")
     Request.Response.Message = "this is a good request"
-    print(Request.Response.Message)
+    assert(Request.Response.Message == "this is a good request")
   )";
 
   DEFINE_REQ_STATE;
@@ -163,9 +267,8 @@ TEST(TestRGWLua, SetResponse)
 TEST(TestRGWLua, SetRGWId)
 {
   const std::string script = R"(
-    print(Request.RGWId)
+    assert(Request.RGWId == "foo")
     Request.RGWId = "bar"
-    print(Request.RGWId)
   )";
 
   DEFINE_REQ_STATE;
@@ -203,27 +306,22 @@ TEST(TestRGWLua, InvalidSubField)
 TEST(TestRGWLua, Bucket)
 {
   const std::string script = R"(
-    if Request.Bucket then
-      msg = "Bucket Id: " .. Request.Bucket.Id
-      RGWDebugLog(msg)
-      print(msg)
-      print("Bucket Marker: " .. Request.Bucket.Marker)
-      print("Bucket Name: " .. Request.Bucket.Name)
-      print("Bucket Tenant: " .. Request.Bucket.Tenant)
-      print("Bucket Count: " .. Request.Bucket.Count)
-      print("Bucket Size: " .. Request.Bucket.Size)
-      print("Bucket ZoneGroupId: " .. Request.Bucket.ZoneGroupId)
-      print("Bucket Creation Time: " .. Request.Bucket.CreationTime)
-      print("Bucket MTime: " .. Request.Bucket.MTime)
-      print("Bucket Quota Max Size: " .. Request.Bucket.Quota.MaxSize)
-      print("Bucket Quota Max Objects: " .. Request.Bucket.Quota.MaxObjects)
-      print("Bucket Quota Enabled: " .. tostring(Request.Bucket.Quota.Enabled))
-      print("Bucket Quota Rounded: " .. tostring(Request.Bucket.Quota.Rounded))
-      print("Bucket User Id: " .. Request.Bucket.User.Id)
-      print("Bucket User Tenant: " .. Request.Bucket.User.Tenant)
-    else
-      print("No bucket")
-    end
+    assert(Request.Bucket)
+    RGWDebugLog("Bucket Id: " .. Request.Bucket.Id)
+    assert(Request.Bucket.Marker == "mymarker")
+    assert(Request.Bucket.Name == "myname")
+    assert(Request.Bucket.Tenant == "mytenant")
+    assert(Request.Bucket.Count == 0)
+    assert(Request.Bucket.Size == 0)
+    assert(Request.Bucket.ZoneGroupId)
+    assert(Request.Bucket.CreationTime)
+    assert(Request.Bucket.MTime)
+    assert(Request.Bucket.Quota.MaxSize == -1)
+    assert(Request.Bucket.Quota.MaxObjects == -1)
+    assert(tostring(Request.Bucket.Quota.Enabled))
+    assert(tostring(Request.Bucket.Quota.Rounded))
+    assert(Request.Bucket.User.Id)
+    assert(Request.Bucket.User.Tenant)
   )";
 
   DEFINE_REQ_STATE;
@@ -233,7 +331,7 @@ TEST(TestRGWLua, Bucket)
   b.name = "myname";
   b.marker = "mymarker";
   b.bucket_id = "myid"; 
-  s.bucket.reset(new sal::RGWRadosBucket(nullptr, b));
+  s.bucket.reset(new sal::RadosBucket(nullptr, b));
 
   const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "put_obj", script);
   ASSERT_EQ(rc, 0);
@@ -242,12 +340,13 @@ TEST(TestRGWLua, Bucket)
 TEST(TestRGWLua, GenericAttributes)
 {
   const std::string script = R"(
-    print("hello  = " .. (Request.GenericAttributes["hello"] or "nil"))
-    print("foo    = " .. (Request.GenericAttributes["foo"] or "nil"))
-    print("kaboom = " .. (Request.GenericAttributes["kaboom"] or "nil"))
-    print("number of attributes is: " .. #Request.GenericAttributes)
+    assert(Request.GenericAttributes["hello"] == "world")
+    assert(Request.GenericAttributes["foo"] == "bar")
+    assert(Request.GenericAttributes["kaboom"] == nil)
+    assert(#Request.GenericAttributes == 4)
     for k, v in pairs(Request.GenericAttributes) do
-      print("key=" .. k .. ", " .. "value=" .. v)
+      assert(k)
+      assert(v)
     end
   )";
 
@@ -264,10 +363,14 @@ TEST(TestRGWLua, GenericAttributes)
 TEST(TestRGWLua, Environment)
 {
   const std::string script = R"(
-    print("number of env entries is: " .. #Request.Environment)
-    for k, v in pairs(Request.Environment) do
-      print("key=" .. k .. ", " .. "value=" .. v)
-    end
+  assert(Request.Environment[""] == "bar")
+  assert(Request.Environment["goodbye"] == "cruel world")
+  assert(Request.Environment["ka"] == "boom")
+  assert(#Request.Environment == 3, #Request.Environment)
+  for k, v in pairs(Request.Environment) do
+    assert(k)
+    assert(v)
+  end
   )";
 
   DEFINE_REQ_STATE;
@@ -283,9 +386,11 @@ TEST(TestRGWLua, Environment)
 TEST(TestRGWLua, Tags)
 {
   const std::string script = R"(
-    print("number of tags is: " .. #Request.Tags)
+    assert(#Request.Tags == 4)
+    assert(Request.Tags["foo"] == "bar")
     for k, v in pairs(Request.Tags) do
-      print("key=" .. k .. ", " .. "value=" .. v)
+      assert(k)
+      assert(v)
     end
   )";
 
@@ -299,40 +404,84 @@ TEST(TestRGWLua, Tags)
   ASSERT_EQ(rc, 0);
 }
 
+TEST(TestRGWLua, TagsNotWriteable)
+{
+  const std::string script = R"(
+    Request.Tags["hello"] = "goodbye"
+  )";
+
+  DEFINE_REQ_STATE;
+  s.tagset.add_tag("hello", "world");
+
+  const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "put_obj", script);
+  ASSERT_NE(rc, 0);
+}
+
+TEST(TestRGWLua, Metadata)
+{
+  const std::string script = R"(
+    assert(#Request.HTTP.Metadata == 3)
+    for k, v in pairs(Request.HTTP.Metadata) do
+      assert(k)
+      assert(v)
+    end
+    assert(Request.HTTP.Metadata["hello"] == "world")
+    assert(Request.HTTP.Metadata["kaboom"] == nil)
+    Request.HTTP.Metadata["hello"] = "goodbye"
+    Request.HTTP.Metadata["kaboom"] = "boom"
+    assert(#Request.HTTP.Metadata == 4)
+    assert(Request.HTTP.Metadata["hello"] == "goodbye")
+    assert(Request.HTTP.Metadata["kaboom"] == "boom")
+  )";
+
+  DEFINE_REQ_STATE;
+  s.info.x_meta_map["hello"] = "world";
+  s.info.x_meta_map["foo"] = "bar";
+  s.info.x_meta_map["ka"] = "boom";
+
+  const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "put_obj", script);
+  ASSERT_EQ(rc, 0);
+}
+
 TEST(TestRGWLua, Acl)
 {
   const std::string script = R"(
     function print_grant(g)
-      print("Type: " .. g.Type)
-      print("GroupType: " .. g.GroupType)
-      print("Permission: " .. g.Permission)
-      print("Referer: " .. g.Referer)
+      print("Grant Type: " .. g.Type)
+      print("Grant Group Type: " .. g.GroupType)
+      print("Grant Referer: " .. g.Referer)
       if (g.User) then
-        print("User.Tenant: " .. g.User.Tenant)
-        print("User.Id: " .. g.User.Id)
+        print("Grant User.Tenant: " .. g.User.Tenant)
+        print("Grant User.Id: " .. g.User.Id)
       end
     end
 
-    print(Request.UserAcl.Owner.DisplayName)
-    print(Request.UserAcl.Owner.User.Id)
-    print(Request.UserAcl.Owner.User.Tenant)
-    print("number of grants is: " .. #Request.UserAcl.Grants)
+    assert(Request.UserAcl.Owner.DisplayName == "jack black", Request.UserAcl.Owner.DisplayName)
+    assert(Request.UserAcl.Owner.User.Id == "black", Request.UserAcl.Owner.User.Id)
+    assert(Request.UserAcl.Owner.User.Tenant == "jack", Request.UserAcl.Owner.User.Tenant)
+    assert(#Request.UserAcl.Grants == 5)
+    print_grant(Request.UserAcl.Grants[""])
     for k, v in pairs(Request.UserAcl.Grants) do
-      print("grant key=" .. k)
-      print("grant values=")
       print_grant(v)
+      if k == "john$doe" then
+        assert(v.Permission == 4)
+      elseif k == "jane$doe" then
+        assert(v.Permission == 1)
+      else
+        assert(false)
+      end
     end
   )";
 
   DEFINE_REQ_STATE;
   ACLOwner owner;
-  owner.set_id(rgw_user("john", "doe"));
-  owner.set_name("john doe");
+  owner.set_id(rgw_user("jack", "black"));
+  owner.set_name("jack black");
   s.user_acl.reset(new RGWAccessControlPolicy(cct));
   s.user_acl->set_owner(owner);
   ACLGrant grant1, grant2, grant3, grant4, grant5;
   grant1.set_canon(rgw_user("jane", "doe"), "her grant", 1);
-  grant2.set_referer("http://localhost/ref1", 2);
+  grant2.set_group(ACL_GROUP_ALL_USERS ,2);
   grant3.set_referer("http://localhost/ref2", 3);
   grant4.set_canon(rgw_user("john", "doe"), "his grant", 4);
   grant5.set_group(ACL_GROUP_AUTHENTICATED_USERS, 5);
@@ -392,9 +541,11 @@ TEST(TestRGWLua, UseFunction)
 TEST(TestRGWLua, WithLib)
 {
   const std::string script = R"(
-    print("bucket name split:")
-    for i in string.gmatch(Request.Bucket.Name, "%a+") do
-      print("lua print: part: " .. i)
+    expected_result = {"my", "bucket", "name", "is", "fish"}
+    i = 1
+    for p in string.gmatch(Request.Bucket.Name, "%a+") do
+      assert(p == expected_result[i])
+      i = i + 1
     end
   )";
 
@@ -402,14 +553,28 @@ TEST(TestRGWLua, WithLib)
 
   rgw_bucket b;
   b.name = "my-bucket-name-is-fish";
-  s.bucket.reset(new sal::RGWRadosBucket(nullptr, b));
+  s.bucket.reset(new sal::RadosBucket(nullptr, b));
 
   const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "put_obj", script);
   ASSERT_EQ(rc, 0);
 }
 
+TEST(TestRGWLua, NotAllowedInLib)
+{
+  const std::string script = R"(
+    os.clock() -- this should be ok
+    os.exit()  -- this should fail (os.exit() is removed)
+  )";
+
+  DEFINE_REQ_STATE;
+
+  const auto rc = lua::request::execute(nullptr, nullptr, nullptr, &s, "put_obj", script);
+  ASSERT_NE(rc, 0);
+}
 #include <sys/socket.h>
 #include <stdlib.h>
+
+bool unix_socket_client_ended_ok = false;
 
 void unix_socket_client(const std::string& path) {
   int fd;
@@ -431,11 +596,11 @@ void unix_socket_client(const std::string& path) {
 		return;
  	}
 
-  std::cout << "unix socket connected to: " << path << std::endl;
   char buff[256];
 	int rc;
  	while((rc=read(fd, buff, sizeof(buff))) > 0) {
 		std::cout << std::string(buff, rc);
+    unix_socket_client_ended_ok = true;
   }
 }
 
@@ -448,19 +613,14 @@ TEST(TestRGWLua, OpsLog)
 
   const std::string script = R"(
 		if Request.Response.HTTPStatusCode == 200 then
-			print("request is good, just log to lua: " .. Request.Response.Message)
+			assert(Request.Response.Message == "Life is great")
 		else 
-			print("request is bad, use ops log:")
-      if Request.Bucket then
-    	  rc = Request.Log()
-    	  print("ops log return code: " .. rc)
-      else
-        print("no bucket, ops log wasn't called")
-      end
+      assert(Request.Bucket)
+    	assert(Request.Log() == 0)
 		end
   )";
 
-  auto store = std::unique_ptr<sal::RGWRadosStore>(new sal::RGWRadosStore);
+  auto store = std::unique_ptr<sal::RadosStore>(new sal::RadosStore);
   store->setRados(new RGWRados);
   auto olog = std::unique_ptr<OpsLogSocket>(new OpsLogSocket(cct, 1024));
   ASSERT_TRUE(olog->init(unix_socket_path));
@@ -475,14 +635,17 @@ TEST(TestRGWLua, OpsLog)
   b.name = "name";
   b.marker = "marker";
   b.bucket_id = "id"; 
-  s.bucket.reset(new sal::RGWRadosBucket(nullptr, b));
+  s.bucket.reset(new sal::RadosBucket(nullptr, b));
   s.bucket_name = "name";
 	s.enable_ops_log = true;
 	s.enable_usage_log = false;
-	s.user.reset(new TestRGWUser());
+	s.user.reset(new TestUser());
   TestAccounter ac;
   s.cio = &ac; 
 	s.cct->_conf->rgw_ops_log_rados	= false;
+
+  s.auth.identity = std::unique_ptr<rgw::auth::Identity>(
+                        new FakeIdentity());
 
   auto rc = lua::request::execute(store.get(), nullptr, olog.get(), &s, "put_obj", script);
   EXPECT_EQ(rc, 0);
@@ -492,7 +655,8 @@ TEST(TestRGWLua, OpsLog)
   EXPECT_EQ(rc, 0);
 
 	// give the socket client time to read
-	std::this_thread::sleep_for(std::chrono::seconds(2));
-	unix_socket_thread.detach();
+	std::this_thread::sleep_for(std::chrono::seconds(5));
+	unix_socket_thread.detach(); // read is stuck there, so we cannot join
+  EXPECT_TRUE(unix_socket_client_ended_ok);
 }
 

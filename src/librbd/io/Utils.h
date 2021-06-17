@@ -8,6 +8,7 @@
 #include "include/buffer_fwd.h"
 #include "include/rados/rados_types.hpp"
 #include "common/zipkin_trace.h"
+#include "librbd/Types.h"
 #include "librbd/io/Types.h"
 #include <map>
 
@@ -37,11 +38,39 @@ void read_parent(ImageCtxT *image_ctx, uint64_t object_no,
 template <typename ImageCtxT = librbd::ImageCtx>
 int clip_request(ImageCtxT *image_ctx, Extents *image_extents);
 
-uint64_t extents_length(Extents &extents);
+inline uint64_t get_extents_length(const Extents &extents) {
+  uint64_t total_bytes = 0;
+  for (auto [_, extent_length] : extents) {
+    total_bytes += extent_length;
+  }
+  return total_bytes;
+}
 
 void unsparsify(CephContext* cct, ceph::bufferlist* bl,
                 const Extents& extent_map, uint64_t bl_off,
                 uint64_t out_bl_len);
+
+template <typename ImageCtxT = librbd::ImageCtx>
+bool trigger_copyup(ImageCtxT *image_ctx, uint64_t object_no,
+                    IOContext io_context, Context* on_finish);
+                
+template <typename ImageCtxT = librbd::ImageCtx>
+void file_to_extents(ImageCtxT *image_ctx, uint64_t offset, uint64_t length,
+                     uint64_t buffer_offset,
+                     striper::LightweightObjectExtents* object_extents);
+
+template <typename ImageCtxT = librbd::ImageCtx>
+void extent_to_file(ImageCtxT *image_ctx, uint64_t object_no, uint64_t offset,
+                    uint64_t length,
+                    std::vector<std::pair<uint64_t, uint64_t> >& extents);
+
+template <typename ImageCtxT = librbd::ImageCtx>
+uint64_t get_file_offset(ImageCtxT *image_ctx, uint64_t object_no,
+                         uint64_t offset);
+
+inline ObjectDispatchLayer get_previous_layer(ObjectDispatchLayer layer) {
+  return (ObjectDispatchLayer)(((int)layer) - 1);
+}
 
 } // namespace util
 } // namespace io

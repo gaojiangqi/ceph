@@ -1,8 +1,8 @@
 import { Component, Input, OnChanges, OnInit } from '@angular/core';
 import { DomSanitizer, SafeUrl } from '@angular/platform-browser';
 
-import { Icons } from '../../../shared/enum/icons.enum';
-import { SettingsService } from '../../api/settings.service';
+import { SettingsService } from '~/app/shared/api/settings.service';
+import { Icons } from '~/app/shared/enum/icons.enum';
 
 @Component({
   selector: 'cd-grafana',
@@ -19,6 +19,7 @@ export class GrafanaComponent implements OnInit, OnChanges {
   panelStyle: any;
   grafanaExist = false;
   mode = '&kiosk';
+  datasource = 'Dashboard1';
   loading = true;
   styles: Record<string, string> = {};
   dashboardExist = true;
@@ -171,6 +172,7 @@ export class GrafanaComponent implements OnInit, OnChanges {
       '/' +
       this.grafanaPath +
       '&refresh=2s' +
+      `&var-datasource=${this.datasource}` +
       this.mode +
       '&' +
       this.time;

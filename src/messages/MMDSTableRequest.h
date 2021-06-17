@@ -19,7 +19,7 @@
 #include "mds/mds_table_types.h"
 #include "messages/MMDSOp.h"
 
-class MMDSTableRequest : public MMDSOp {
+class MMDSTableRequest final : public MMDSOp {
 public:
   __u16 table = 0;
   __s16 op = 0;
@@ -33,7 +33,7 @@ protected:
     table(tab), op(o), reqid(r) {
     set_tid(v);
   }
-  ~MMDSTableRequest() override {}
+  ~MMDSTableRequest() final {}
 
 public:
   std::string_view get_type_name() const override { return "mds_table_request"; }
@@ -65,6 +65,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

@@ -7,7 +7,7 @@
 
 #include "crimson/common/log.h"
 #include "crimson/net/Errors.h"
-#include "crimson/net/Dispatcher.h"
+#include "crimson/net/chained_dispatchers.h"
 #include "crimson/net/Socket.h"
 #include "crimson/net/SocketConnection.h"
 #include "msg/Message.h"
@@ -21,10 +21,10 @@ namespace {
 namespace crimson::net {
 
 Protocol::Protocol(proto_t type,
-                   ChainedDispatchersRef& dispatcher,
+                   ChainedDispatchers& dispatchers,
                    SocketConnection& conn)
   : proto_type(type),
-    dispatcher(dispatcher),
+    dispatchers(dispatchers),
     conn(conn),
     auth_meta{seastar::make_lw_shared<AuthConnectionMeta>()}
 {}
@@ -48,18 +48,6 @@ void Protocol::close(bool dispatch_reset,
                 dispatch_reset ? "yes" : "no",
                 is_replace ? "yes" : "no");
 
-  // unregister_conn() drops a reference, so hold another until completion
-  auto cleanup = [conn_ref = conn.shared_from_this(), this] {
-      logger().debug("{} closed!", conn);
-      on_closed();
-#ifdef UNIT_TESTS_BUILT
-      is_closed_clean = true;
-      if (conn.interceptor) {
-        conn.interceptor->register_conn_closed(conn);
-      }
-#endif
-    };
-
   // atomic operations
   closed = true;
   trigger_close();
@@ -70,28 +58,56 @@ void Protocol::close(bool dispatch_reset,
     socket->shutdown();
   }
   set_write_state(write_state_t::drop);
+  assert(!gate.is_closed());
   auto gate_closed = gate.close();
 
   if (dispatch_reset) {
-    try {
-        dispatcher->ms_handle_reset(
-            seastar::static_pointer_cast<SocketConnection>(conn.shared_from_this()),
-            is_replace);
-    } catch (...) {
-      logger().error("{} got unexpected exception in ms_handle_reset() {}",
-                     conn, std::current_exception());
-    }
+    dispatchers.ms_handle_reset(
+        seastar::static_pointer_cast<SocketConnection>(conn.shared_from_this()),
+        is_replace);
   }
 
   // asynchronous operations
   assert(!close_ready.valid());
-  close_ready = std::move(gate_closed).finally([this] {
+  close_ready = std::move(gate_closed).then([this] {
     if (socket) {
       return socket->close();
     } else {
       return seastar::now();
     }
-  }).finally(std::move(cleanup));
+  }).then([this] {
+    logger().debug("{} closed!", conn);
+    on_closed();
+#ifdef UNIT_TESTS_BUILT
+    is_closed_clean = true;
+    if (conn.interceptor) {
+      conn.interceptor->register_conn_closed(conn);
+    }
+#endif
+  }).handle_exception([conn_ref = conn.shared_from_this(), this] (auto eptr) {
+    logger().error("{} closing: close_ready got unexpected exception {}", conn, eptr);
+    ceph_abort();
+  });
+}
+
+ceph::bufferlist Protocol::sweep_messages_and_move_to_sent(
+      size_t num_msgs,
+      bool require_keepalive,
+      std::optional<utime_t> keepalive_ack,
+      bool require_ack)
+{
+  ceph::bufferlist bl = do_sweep_messages(conn.out_q, 
+                                          num_msgs, 
+                                          require_keepalive, 
+                                          keepalive_ack, 
+                                          require_ack);
+  if (!conn.policy.lossy) {
+    conn.sent.insert(conn.sent.end(),
+                     std::make_move_iterator(conn.out_q.begin()),
+                     std::make_move_iterator(conn.out_q.end()));
+  }
+  conn.out_q.clear();
+  return bl;
 }
 
 seastar::future<> Protocol::send(MessageRef msg)
@@ -226,18 +242,11 @@ seastar::future<> Protocol::do_write_dispatch_sweep()
       if (unlikely(!still_queued)) {
         return try_exit_sweep();
       }
-      conn.pending_q.clear();
-      conn.pending_q.swap(conn.out_q);
-      if (!conn.policy.lossy) {
-        conn.sent.insert(conn.sent.end(),
-                         conn.pending_q.begin(),
-                         conn.pending_q.end());
-      }
       auto acked = ack_left;
       assert(acked == 0 || conn.in_seq > 0);
       // sweep all pending writes with the concrete Protocol
-      return socket->write(do_sweep_messages(
-          conn.pending_q, num_msgs, need_keepalive, keepalive_ack, acked > 0)
+      return socket->write(sweep_messages_and_move_to_sent(
+          num_msgs, need_keepalive, keepalive_ack, acked > 0)
       ).then([this, prv_keepalive_ack=keepalive_ack, acked] {
         need_keepalive = false;
         if (keepalive_ack == prv_keepalive_ack) {
@@ -311,6 +320,7 @@ void Protocol::write_event()
    case write_state_t::open:
      [[fallthrough]];
    case write_state_t::delay:
+    assert(!gate.is_closed());
     gate.dispatch_in_background("do_write_dispatch_sweep", *this, [this] {
       return do_write_dispatch_sweep();
     });

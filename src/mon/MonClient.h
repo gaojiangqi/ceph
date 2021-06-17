@@ -340,7 +340,6 @@ private:
 
   std::list<MessageRef> waiting_for_session;
   utime_t last_rotating_renew_sent;
-  std::unique_ptr<Context> session_established_context;
   bool had_a_connection;
   double reopen_interval_multiplier;
 
@@ -351,9 +350,9 @@ private:
   void _finish_hunting(int auth_err);
   void _finish_auth(int auth_err);
   void _reopen_session(int rank = -1);
-  void _add_conn(unsigned rank, uint64_t global_id);
+  void _add_conn(unsigned rank);
+  void _add_conns();
   void _un_backoff();
-  void _add_conns(uint64_t global_id);
   void _send_mon_message(MessageRef m);
 
   std::map<entity_addrvec_t, MonConnection>::iterator _find_pending_con(
@@ -504,18 +503,9 @@ public:
     send_mon_message(MessageRef{m, false});
   }
   void send_mon_message(MessageRef m);
-  /**
-   * If you specify a callback, you should not call
-   * reopen_session() again until it has been triggered. The MonClient
-   * will behave, but the first callback could be triggered after
-   * the session has been killed and the MonClient has started trying
-   * to reconnect to another monitor.
-   */
-  void reopen_session(Context *cb=NULL) {
+
+  void reopen_session() {
     std::lock_guard l(monc_lock);
-    if (cb) {
-      session_established_context.reset(cb);
-    }
     _reopen_session();
   }
 
@@ -567,9 +557,10 @@ private:
 
     MonCommand(MonClient& monc, uint64_t t, std::unique_ptr<CommandCompletion> onfinish)
       : tid(t), onfinish(std::move(onfinish)) {
-      auto timeout = ceph::maybe_timespan(monc.cct->_conf->rados_mon_op_timeout);
-      if (timeout) {
-	cancel_timer.emplace(monc.service, *timeout);
+      auto timeout =
+          monc.cct->_conf.get_val<std::chrono::seconds>("rados_mon_op_timeout");
+      if (timeout.count() > 0) {
+	cancel_timer.emplace(monc.service, timeout);
 	cancel_timer->async_wait(
           [this, &monc](boost::system::error_code ec) {
 	    if (ec)

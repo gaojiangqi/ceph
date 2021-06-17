@@ -18,7 +18,7 @@
 
 #include "messages/MMDSOp.h"
 
-class MInodeFileCaps : public MMDSOp {
+class MInodeFileCaps final : public MMDSOp {
 private:
   static constexpr int HEAD_VERSION = 1;
   static constexpr int COMPAT_VERSION = 1;
@@ -36,7 +36,7 @@ protected:
     this->ino = ino;
     this->caps = caps;
   }
-  ~MInodeFileCaps() override {}
+  ~MInodeFileCaps() final {}
 
 public:
   std::string_view get_type_name() const override { return "inode_file_caps";}
@@ -58,6 +58,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

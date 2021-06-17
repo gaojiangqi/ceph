@@ -17,7 +17,7 @@
 
 #include "messages/MMDSOp.h"
 
-class MMDSSnapUpdate : public MMDSOp {
+class MMDSSnapUpdate final : public MMDSOp {
 private:
   inodeno_t ino;
   __s16 snap_op;
@@ -34,7 +34,7 @@ protected:
     MMDSOp{MSG_MDS_SNAPUPDATE}, ino(i), snap_op(op) {
       set_tid(tid);
     }
-  ~MMDSSnapUpdate() override {}
+  ~MMDSSnapUpdate() final {}
 
 public:
   std::string_view get_type_name() const override { return "snap_update"; }
@@ -58,6 +58,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

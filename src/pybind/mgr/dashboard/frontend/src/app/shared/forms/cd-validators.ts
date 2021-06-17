@@ -347,18 +347,27 @@ export class CdValidators {
   static unique(
     serviceFn: existsServiceFn,
     serviceFnThis: any = null,
-    dueTime = 500
+    usernameFn?: Function,
+    uidField = false
   ): AsyncValidatorFn {
+    let uName: string;
     return (control: AbstractControl): Observable<ValidationErrors | null> => {
       // Exit immediately if user has not interacted with the control yet
       // or the control value is empty.
       if (control.pristine || isEmptyInputValue(control.value)) {
         return observableOf(null);
       }
-      // Forgot previous requests if a new one arrives within the specified
-      // delay time.
-      return observableTimer(dueTime).pipe(
-        switchMapTo(serviceFn.call(serviceFnThis, control.value)),
+      uName = control.value;
+      if (_.isFunction(usernameFn) && usernameFn() !== null && usernameFn() !== '') {
+        if (uidField) {
+          uName = `${control.value}$${usernameFn()}`;
+        } else {
+          uName = `${usernameFn()}$${control.value}`;
+        }
+      }
+
+      return observableTimer().pipe(
+        switchMapTo(serviceFn.call(serviceFnThis, uName)),
         map((resp: boolean) => {
           if (!resp) {
             return null;

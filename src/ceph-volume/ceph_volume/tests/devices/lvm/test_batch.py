@@ -1,7 +1,12 @@
 import pytest
 import json
 import random
+
+from argparse import ArgumentError
+from mock import MagicMock, patch
+
 from ceph_volume.devices.lvm import batch
+from ceph_volume.util import arg_validators
 
 
 class TestBatch(object):
@@ -19,6 +24,15 @@ class TestBatch(object):
             batch.ensure_disjoint_device_lists(devices, db_devices)
         assert 'Device lists are not disjoint' in str(disjoint_ex.value)
 
+    @patch('ceph_volume.util.arg_validators.Device')
+    def test_reject_partition(self, mocked_device):
+        mocked_device.return_value = MagicMock(
+            is_partition=True,
+            has_gpt_headers=False,
+        )
+        with pytest.raises(ArgumentError):
+            arg_validators.ValidBatchDevice()('foo')
+
     @pytest.mark.parametrize('format_', ['pretty', 'json', 'json-pretty'])
     def test_report(self, format_, factory, conf_ceph_stub, mock_device_generator):
         # just ensure reporting works
@@ -35,6 +49,7 @@ class TestBatch(object):
                        bluestore=True,
                        block_db_size="1G",
                        dmcrypt=True,
+                       data_allocate_fraction=1.0,
                       )
         b = batch.Batch([])
         plan = b.get_plan(args)
@@ -57,6 +72,7 @@ class TestBatch(object):
                        bluestore=True,
                        block_db_size="1G",
                        dmcrypt=True,
+                       data_allocate_fraction=1.0,
                       )
         b = batch.Batch([])
         plan = b.get_plan(args)
@@ -82,6 +98,7 @@ class TestBatch(object):
                        bluestore=True,
                        block_db_size="1G",
                        dmcrypt=True,
+                       data_allocate_fraction=1.0,
                       )
         b = batch.Batch([])
         plan = b.get_plan(args)
@@ -109,6 +126,7 @@ class TestBatch(object):
                        bluestore=True,
                        block_db_size="1G",
                        dmcrypt=True,
+                       data_allocate_fraction=1.0,
                       )
         b = batch.Batch([])
         plan = b.get_plan(args)
@@ -116,36 +134,75 @@ class TestBatch(object):
         report = b._create_report(plan)
         json.loads(report)
 
+    @pytest.mark.parametrize('rota', [0, 1])
+    def test_batch_sort_full(self, factory, rota):
+        device1 = factory(used_by_ceph=False, available=True, rotational=rota, abspath="/dev/sda")
+        device2 = factory(used_by_ceph=False, available=True, rotational=rota, abspath="/dev/sdb")
+        device3 = factory(used_by_ceph=False, available=True, rotational=rota, abspath="/dev/sdc")
+        devices = [device1, device2, device3]
+        args = factory(report=True,
+                       devices=devices,
+                       filestore=False,
+                      )
+        b = batch.Batch([])
+        b.args = args
+        b._sort_rotational_disks()
+        assert len(b.args.devices) == 3
+
+    @pytest.mark.parametrize('objectstore', ['bluestore', 'filestore'])
+    def test_batch_sort_mixed(self, factory, objectstore):
+        device1 = factory(used_by_ceph=False, available=True, rotational=1, abspath="/dev/sda")
+        device2 = factory(used_by_ceph=False, available=True, rotational=1, abspath="/dev/sdb")
+        device3 = factory(used_by_ceph=False, available=True, rotational=0, abspath="/dev/sdc")
+        devices = [device1, device2, device3]
+        args = factory(report=True,
+                       devices=devices,
+                       filestore=False if objectstore == 'bluestore' else True,
+                      )
+        b = batch.Batch([])
+        b.args = args
+        b._sort_rotational_disks()
+        assert len(b.args.devices) == 2
+        if objectstore == 'bluestore':
+            assert len(b.args.db_devices) == 1
+        else:
+            assert len(b.args.journal_devices) == 1
+
     def test_get_physical_osds_return_len(self, factory,
                                           mock_devices_available,
                                           conf_ceph_stub,
                                           osds_per_device):
         conf_ceph_stub('[global]\nfsid=asdf-lkjh')
         args = factory(data_slots=1, osds_per_device=osds_per_device,
-                       osd_ids=[], dmcrypt=False)
+                       osd_ids=[], dmcrypt=False,
+                       data_allocate_fraction=1.0)
         osds = batch.get_physical_osds(mock_devices_available, args)
         assert len(osds) == len(mock_devices_available) * osds_per_device
 
     def test_get_physical_osds_rel_size(self, factory,
                                           mock_devices_available,
                                           conf_ceph_stub,
-                                          osds_per_device):
+                                          osds_per_device,
+                                          data_allocate_fraction):
         args = factory(data_slots=1, osds_per_device=osds_per_device,
-                       osd_ids=[], dmcrypt=False)
+                       osd_ids=[], dmcrypt=False,
+                       data_allocate_fraction=data_allocate_fraction)
         osds = batch.get_physical_osds(mock_devices_available, args)
         for osd in osds:
-            assert osd.data[1] == 1.0 / osds_per_device
+            assert osd.data[1] == data_allocate_fraction / osds_per_device
 
     def test_get_physical_osds_abs_size(self, factory,
                                           mock_devices_available,
                                           conf_ceph_stub,
-                                          osds_per_device):
+                                          osds_per_device,
+                                          data_allocate_fraction):
         conf_ceph_stub('[global]\nfsid=asdf-lkjh')
         args = factory(data_slots=1, osds_per_device=osds_per_device,
-                       osd_ids=[], dmcrypt=False)
+                       osd_ids=[], dmcrypt=False,
+                       data_allocate_fraction=data_allocate_fraction)
         osds = batch.get_physical_osds(mock_devices_available, args)
         for osd, dev in zip(osds, mock_devices_available):
-            assert osd.data[2] == int(dev.vg_size[0] / osds_per_device)
+            assert osd.data[2] == int(dev.vg_size[0] * (data_allocate_fraction / osds_per_device))
 
     def test_get_physical_osds_osd_ids(self, factory,
                                           mock_devices_available,

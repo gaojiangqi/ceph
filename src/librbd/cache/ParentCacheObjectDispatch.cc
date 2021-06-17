@@ -102,6 +102,7 @@ bool ParentCacheObjectDispatch<I>::read(
   m_cache_client->lookup_object(m_image_ctx->data_ctx.get_namespace(),
                                 m_image_ctx->data_ctx.get_id(),
                                 io_context->read_snap().value_or(CEPH_NOSNAP),
+                                m_image_ctx->layout.object_size,
                                 oid, std::move(ctx));
   return true;
 }
@@ -205,7 +206,7 @@ void ParentCacheObjectDispatch<I>::create_cache_session(Context* on_finish,
   Context* connect_ctx = new LambdaContext(
     [this, cct, register_ctx](int ret) {
     if (ret < 0) {
-      lderr(cct) << "Parent cache fail to connect RO daeomn." << dendl;
+      lderr(cct) << "Parent cache fail to connect RO daemon." << dendl;
       register_ctx->complete(ret);
       return;
     }

@@ -18,7 +18,7 @@
 #include "MExportDir.h"
 #include "messages/MMDSOp.h"
 
-class MExportDirAck : public MMDSOp {
+class MExportDirAck final : public MMDSOp {
 public:
   dirfrag_t dirfrag;
   ceph::buffer::list imported_caps;
@@ -31,7 +31,7 @@ protected:
     MMDSOp{MSG_MDS_EXPORTDIRACK}, dirfrag(df) {
     set_tid(tid);
   }
-  ~MExportDirAck() override {}
+  ~MExportDirAck() final {}
 
 public:
   std::string_view get_type_name() const override { return "ExAck"; }
@@ -53,6 +53,8 @@ public:
 private:
   template<class T, typename... Args>
   friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
+  template<class T, typename... Args>
+  friend MURef<T> crimson::make_message(Args&&... args);
 };
 
 #endif

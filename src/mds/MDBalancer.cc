@@ -29,7 +29,6 @@
 #include "msg/Messenger.h"
 
 #include <fstream>
-#include <iostream>
 #include <vector>
 #include <map>
 using std::map;
@@ -369,7 +368,7 @@ int MDBalancer::localize_balancer()
 
   /* we assume that balancer is in the metadata pool */
   object_t oid = object_t(mds->mdsmap->get_balancer());
-  object_locator_t oloc(mds->mdsmap->get_metadata_pool());
+  object_locator_t oloc(mds->get_metadata_pool());
   ceph_tid_t tid = mds->objecter->read(oid, oloc, 0, 0, CEPH_NOSNAP, &lua_src, 0,
                                        new C_SafeCond(lock, cond, &ack, &r));
   dout(15) << "launched non-blocking read tid=" << tid
@@ -384,8 +383,8 @@ int MDBalancer::localize_balancer()
   /* success: store the balancer in memory and set the version. */
   if (!r) {
     if (ret_t == std::cv_status::timeout) {
-      mds->objecter->op_cancel(tid, -ECANCELED);
-      return -ETIMEDOUT;
+      mds->objecter->op_cancel(tid, -CEPHFS_ECANCELED);
+      return -CEPHFS_ETIMEDOUT;
     }
     bal_code.assign(lua_src.to_str());
     bal_version.assign(oid.name);
@@ -875,7 +874,7 @@ int MDBalancer::mantle_prep_rebalance()
 
   /* mantle doesn't know about cluster size, so check target len here */
   if ((int) state.targets.size() != cluster_size)
-    return -EINVAL;
+    return -CEPHFS_EINVAL;
   else if (ret)
     return ret;
 
@@ -1262,7 +1261,7 @@ void MDBalancer::hit_dir(CDir *dir, int type, int who, double amount)
     }
 
     if (dir->is_auth() && !dir->is_ambiguous_auth()) {
-      if (!dir->is_rep() &&
+      if (dir->can_rep() &&
 	  dir_pop >= g_conf()->mds_bal_replicate_threshold) {
 	// replicate
 	double rdp = dir->pop_me.get(META_POP_IRD).get();
